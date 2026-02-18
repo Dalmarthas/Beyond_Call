@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "qa:mac:preflight": "bash scripts/macos/preflight.sh",
+    "qa:mac:report": "bash scripts/macos/new-smoke-report.sh",
+    "qa:mac": "bash scripts/macos/preflight.sh && bash scripts/macos/new-smoke-report.sh",
+    "qa:mac:commit": "bash scripts/macos/commit-smoke-report.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

@@ -43,6 +43,34 @@ npm install
 npm run tauri dev
 ```
 
+## macOS QA flow (recommended before release)
+
+1. Run dependency/runtime preflight:
+
+```bash
+npm run qa:mac:preflight
+```
+
+2. Generate a timestamped smoke-test report template:
+
+```bash
+npm run qa:mac:report
+```
+
+3. Launch the app and execute the checklist in the generated report:
+
+```bash
+npm run tauri dev
+```
+
+4. Commit test evidence from `test-reports/` after execution.
+
+Helper:
+
+```bash
+bash scripts/macos/commit-smoke-report.sh test-reports/mac-smoke-YYYYMMDD-HHMMSS.md
+```
+
 ## Packaging
 
 ```bash
