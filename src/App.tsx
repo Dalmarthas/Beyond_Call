@@ -139,6 +139,10 @@ export default function App() {
       return Boolean(device?.is_loopback);
     });
   }, [recordingDevices, sources]);
+  const selectedNativeSystemSource = useMemo(
+    () => sources.some((source) => source.format === "screencapturekit"),
+    [sources]
+  );
 
   async function reloadBootstrap(keepSelection = true) {
     const data = await api.bootstrapState();
@@ -377,10 +381,11 @@ export default function App() {
     if (devices.length === 0) {
       return;
     }
+    const preferredMicLike = devices.find((device) => !device.is_loopback) ?? devices[0];
 
     setSources((current) => {
       if (current.length === 0) {
-        return [sourceFromDevice(devices[0])];
+        return [sourceFromDevice(preferredMicLike)];
       }
 
       return current.map((source, index) => {
@@ -388,7 +393,10 @@ export default function App() {
         if (exact) {
           return sourceFromDevice(exact);
         }
-        const fallback = devices[Math.min(index, devices.length - 1)] ?? devices[0];
+        const fallback =
+          source.label.toLowerCase().includes("mic")
+            ? preferredMicLike
+            : devices[Math.min(index, devices.length - 1)] ?? devices[0];
         return sourceFromDevice(fallback);
       });
     });
@@ -576,8 +584,9 @@ export default function App() {
 
               <h3>Recording Sources</h3>
               <p className="help-text">
-                Pick devices by name. For speaker/call audio on macOS, install a loopback device
-                (for example BlackHole) and select it here.
+                Pick devices by name. On macOS 13+, select "System Audio (macOS Native)" for
+                direct system/call capture. Loopback devices (for example BlackHole) remain as
+                fallback options.
               </p>
               <p className="help-text">
                 macOS loopback setup: 1) Open Audio MIDI Setup. 2) Create a Multi-Output Device
@@ -827,8 +836,9 @@ export default function App() {
                       </p>
                       {selectedLoopbackOnly && recordingLevel < 0.03 && (
                         <p className="help-text">
-                          Loopback input appears silent. Ensure your call/browser output is routed to
-                          BlackHole (or a Multi-Output Device that includes BlackHole).
+                          {selectedNativeSystemSource
+                            ? "System source appears silent. Ensure macOS granted Screen & System Audio Recording permission and your call app is playing audio."
+                            : "Loopback input appears silent. Ensure your call/browser output is routed to BlackHole (or a Multi-Output Device that includes BlackHole)."}
                         </p>
                       )}
                     </>
