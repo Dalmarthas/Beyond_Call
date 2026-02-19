@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODEL_NAME="${1:-qwen3:8b}"
+export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 
 pass() { printf "[PASS] %s\n" "$1"; }
 warn() { printf "[WARN] %s\n" "$1"; }
@@ -42,6 +43,43 @@ elif command -v whisper >/dev/null 2>&1; then
   pass "Found transcription command 'whisper'"
 else
   fail "Missing transcription command: install 'whisper-cli' or 'whisper'"
+  hard_fail=1
+fi
+
+if [ -f "models/ggml-base.bin" ]; then
+  size_bytes="$(stat -f %z "models/ggml-base.bin" 2>/dev/null || echo 0)"
+  if [ "${size_bytes}" -ge 10000000 ]; then
+    pass "Found Whisper model at models/ggml-base.bin"
+  else
+    fail "Whisper model looks invalid (${size_bytes} bytes). Reinstall with: bash scripts/macos/install-whisper-model.sh"
+    hard_fail=1
+  fi
+elif [ -f "models/ggml-tiny.bin" ]; then
+  size_bytes="$(stat -f %z "models/ggml-tiny.bin" 2>/dev/null || echo 0)"
+  if [ "${size_bytes}" -ge 10000000 ]; then
+    pass "Found Whisper model at models/ggml-tiny.bin"
+  else
+    fail "Whisper model looks invalid (${size_bytes} bytes). Reinstall with: bash scripts/macos/install-whisper-model.sh"
+    hard_fail=1
+  fi
+elif [ -f "models/ggml-base.en.bin" ]; then
+  size_bytes="$(stat -f %z "models/ggml-base.en.bin" 2>/dev/null || echo 0)"
+  if [ "${size_bytes}" -ge 10000000 ]; then
+    pass "Found Whisper model at models/ggml-base.en.bin"
+  else
+    fail "Whisper model looks invalid (${size_bytes} bytes). Reinstall with: bash scripts/macos/install-whisper-model.sh"
+    hard_fail=1
+  fi
+elif [ -f "models/ggml-tiny.en.bin" ]; then
+  size_bytes="$(stat -f %z "models/ggml-tiny.en.bin" 2>/dev/null || echo 0)"
+  if [ "${size_bytes}" -ge 10000000 ]; then
+    pass "Found Whisper model at models/ggml-tiny.en.bin"
+  else
+    fail "Whisper model looks invalid (${size_bytes} bytes). Reinstall with: bash scripts/macos/install-whisper-model.sh"
+    hard_fail=1
+  fi
+else
+  fail "No valid Whisper model found. Run: bash scripts/macos/install-whisper-model.sh (downloads multilingual tiny by default)"
   hard_fail=1
 fi
 

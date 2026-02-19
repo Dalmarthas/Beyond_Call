@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
@@ -27,7 +27,16 @@ struct AppState {
 struct RecordingSession {
     entry_id: String,
     output_path: PathBuf,
+    existing_path: Option<PathBuf>,
     child: Child,
+    telemetry: Arc<Mutex<RecordingTelemetry>>,
+    paused: bool,
+}
+
+#[derive(Debug, Default)]
+struct RecordingTelemetry {
+    bytes_written: u64,
+    level: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +112,20 @@ struct RecordingSource {
     label: String,
     format: String,
     input: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecordingDevice {
+    name: String,
+    format: String,
+    input: String,
+    is_loopback: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecordingMeter {
+    bytes_written: u64,
+    level: f32,
 }
 
 fn now_ts() -> String {
@@ -499,6 +522,131 @@ fn wait_for_ffmpeg_shutdown(child: &mut Child) {
     let _ = child.wait();
 }
 
+fn concat_recordings(first: &Path, second: &Path, output: &Path) -> Result<(), String> {
+    let out = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i")
+        .arg(first)
+        .arg("-i")
+        .arg(second)
+        .arg("-filter_complex")
+        .arg("[0:a][1:a]concat=n=2:v=0:a=1[a]")
+        .arg("-map")
+        .arg("[a]")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg(output)
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg concat: {e}"))?;
+
+    if !out.status.success() {
+        let stderr_text = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("Failed to append recording segments: {stderr_text}"));
+    }
+
+    Ok(())
+}
+
+fn set_process_paused(pid: u32, paused: bool) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let signal = if paused { "-STOP" } else { "-CONT" };
+        let status = Command::new("kill")
+            .arg(signal)
+            .arg(pid.to_string())
+            .status()
+            .map_err(|e| format!("Failed to send pause signal: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Failed to update recording pause state".to_string())
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        let _ = paused;
+        Err("Pause/resume is currently supported on macOS/Linux only".to_string())
+    }
+}
+
+fn resolve_whisper_model_path(base_data_dir: &Path) -> Result<PathBuf, String> {
+    let min_model_bytes = 10 * 1024 * 1024_u64;
+
+    let validate_model = |path: &Path| -> Result<bool, String> {
+        if !path.exists() {
+            return Ok(false);
+        }
+        let metadata = fs::metadata(path)
+            .map_err(|e| format!("Failed to inspect whisper model at {}: {e}", path.display()))?;
+        if metadata.len() < min_model_bytes {
+            return Err(format!(
+                "Whisper model at {} looks invalid ({} bytes). Install a real model with `bash scripts/macos/install-whisper-model.sh`.",
+                path.display(),
+                metadata.len()
+            ));
+        }
+        Ok(true)
+    };
+
+    if let Ok(explicit) = std::env::var("WHISPER_MODEL_PATH") {
+        let candidate = PathBuf::from(explicit);
+        if validate_model(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    // Prefer multilingual models for language auto-detection.
+    candidates.push(base_data_dir.join("models").join("ggml-base.bin"));
+    candidates.push(base_data_dir.join("models").join("ggml-tiny.bin"));
+    candidates.push(base_data_dir.join("models").join("ggml-base.en.bin"));
+    candidates.push(base_data_dir.join("models").join("ggml-tiny.en.bin"));
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("models").join("ggml-base.bin"));
+        candidates.push(cwd.join("models").join("ggml-tiny.bin"));
+        candidates.push(cwd.join("models").join("ggml-base.en.bin"));
+        candidates.push(cwd.join("models").join("ggml-tiny.en.bin"));
+        candidates.push(cwd.join("..").join("models").join("ggml-base.bin"));
+        candidates.push(cwd.join("..").join("models").join("ggml-tiny.bin"));
+        candidates.push(cwd.join("..").join("models").join("ggml-base.en.bin"));
+        candidates.push(cwd.join("..").join("models").join("ggml-tiny.en.bin"));
+    }
+
+    for candidate in candidates {
+        if validate_model(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+
+    Err(
+        "No valid whisper model found. Set WHISPER_MODEL_PATH or place ggml-base.bin / ggml-tiny.bin (or *.en variants) in ./models/ (install via `bash scripts/macos/install-whisper-model.sh`).".to_string(),
+    )
+}
+
+fn parse_whisper_detected_language(stderr_text: &str) -> Option<String> {
+    let marker = "auto-detected language:";
+    for line in stderr_text.lines() {
+        let lower = line.to_lowercase();
+        let Some(pos) = lower.find(marker) else {
+            continue;
+        };
+        let suffix = lower[(pos + marker.len())..].trim();
+        let lang: String = suffix
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphabetic() || *ch == '-')
+            .collect();
+        if (2..=8).contains(&lang.len()) {
+            return Some(lang);
+        }
+    }
+    None
+}
+
 fn call_ollama(model_name: &str, prompt: &str) -> Result<String, String> {
     let client = Client::new();
     let response = client
@@ -527,6 +675,181 @@ fn call_ollama(model_name: &str, prompt: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(|v| v.to_string())
         .ok_or_else(|| "Ollama response missing `response` text".to_string())
+}
+
+fn is_loopback_device_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    let loopback_markers = [
+        "blackhole",
+        "loopback",
+        "soundflower",
+        "vb-cable",
+        "stereo mix",
+        "monitor of",
+    ];
+    loopback_markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn parse_macos_recording_devices(joined_output: &str) -> Vec<RecordingDevice> {
+    let mut devices = Vec::new();
+    let mut in_audio_section = false;
+
+    for line in joined_output.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("AVFoundation audio devices") {
+            in_audio_section = true;
+            continue;
+        }
+        if trimmed.contains("AVFoundation video devices") {
+            in_audio_section = false;
+            continue;
+        }
+        if !in_audio_section {
+            continue;
+        }
+
+        let Some(marker) = trimmed.rfind("] [") else {
+            continue;
+        };
+        let rest = &trimmed[(marker + 3)..];
+        let Some(end_index_marker) = rest.find("] ") else {
+            continue;
+        };
+
+        let index = rest[..end_index_marker].trim();
+        let name = rest[(end_index_marker + 2)..].trim();
+        if index.is_empty() || name.is_empty() {
+            continue;
+        }
+
+        devices.push(RecordingDevice {
+            name: name.to_string(),
+            format: "avfoundation".to_string(),
+            input: format!(":{index}"),
+            is_loopback: is_loopback_device_name(name),
+        });
+    }
+
+    devices
+}
+
+fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> {
+    let mut devices = Vec::new();
+    let mut in_audio_section = false;
+
+    for line in joined_output.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("DirectShow audio devices") {
+            in_audio_section = true;
+            continue;
+        }
+        if trimmed.contains("DirectShow video devices") {
+            in_audio_section = false;
+            continue;
+        }
+        if !in_audio_section || trimmed.contains("Alternative name") {
+            continue;
+        }
+
+        let Some(first_quote) = trimmed.find('"') else {
+            continue;
+        };
+        let remainder = &trimmed[(first_quote + 1)..];
+        let Some(second_quote) = remainder.find('"') else {
+            continue;
+        };
+
+        let name = remainder[..second_quote].trim();
+        if name.is_empty() {
+            continue;
+        }
+
+        let exists = devices
+            .iter()
+            .any(|item: &RecordingDevice| item.name.eq_ignore_ascii_case(name));
+        if exists {
+            continue;
+        }
+
+        devices.push(RecordingDevice {
+            name: name.to_string(),
+            format: "dshow".to_string(),
+            input: format!("audio={name}"),
+            is_loopback: is_loopback_device_name(name),
+        });
+    }
+
+    devices
+}
+
+fn estimated_pcm_bytes_from_us(out_time_us: u64) -> u64 {
+    // 16kHz * 1 channel * s16 (2 bytes)
+    44 + (out_time_us.saturating_mul(32_000) / 1_000_000)
+}
+
+fn rms_db_to_level(db: f32) -> f32 {
+    // Treat -55 dB as silence and -10 dB as strong signal.
+    ((db + 55.0) / 45.0).clamp(0.0, 1.0)
+}
+
+#[tauri::command]
+fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
+    if !find_executable("ffmpeg") {
+        return Err("ffmpeg not found in PATH".to_string());
+    }
+
+    let output = if cfg!(target_os = "macos") {
+        Command::new("ffmpeg")
+            .arg("-f")
+            .arg("avfoundation")
+            .arg("-list_devices")
+            .arg("true")
+            .arg("-i")
+            .arg("")
+            .output()
+            .map_err(|e| format!("Failed to query ffmpeg avfoundation devices: {e}"))?
+    } else if cfg!(target_os = "windows") {
+        Command::new("ffmpeg")
+            .arg("-list_devices")
+            .arg("true")
+            .arg("-f")
+            .arg("dshow")
+            .arg("-i")
+            .arg("dummy")
+            .output()
+            .map_err(|e| format!("Failed to query ffmpeg dshow devices: {e}"))?
+    } else {
+        Command::new("ffmpeg")
+            .arg("-sources")
+            .arg("pulse")
+            .output()
+            .map_err(|e| format!("Failed to query ffmpeg audio sources: {e}"))?
+    };
+
+    let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
+    let joined = format!("{stderr_text}\n{stdout_text}");
+
+    let mut devices = if cfg!(target_os = "macos") {
+        parse_macos_recording_devices(&joined)
+    } else if cfg!(target_os = "windows") {
+        parse_windows_recording_devices(&joined)
+    } else {
+        Vec::new()
+    };
+
+    if devices.is_empty() && cfg!(target_os = "macos") {
+        devices.push(RecordingDevice {
+            name: "Default Microphone".to_string(),
+            format: "avfoundation".to_string(),
+            input: ":0".to_string(),
+            is_loopback: false,
+        });
+    }
+
+    Ok(devices)
 }
 
 #[tauri::command]
@@ -573,10 +896,13 @@ fn list_audio_device_hints() -> Result<Vec<String>, String> {
         if trimmed.is_empty() {
             continue;
         }
+        let is_macos_audio_index =
+            cfg!(target_os = "macos") && trimmed.contains("AVFoundation indev") && trimmed.contains("] [");
         if trimmed.contains("AVFoundation audio devices")
             || trimmed.contains("AVFoundation input device")
             || trimmed.contains("DirectShow audio devices")
             || trimmed.contains("Alternative name")
+            || is_macos_audio_index
             || (cfg!(target_os = "windows") && trimmed.contains("]  \""))
         {
             hints.push(trimmed.to_string());
@@ -588,6 +914,28 @@ fn list_audio_device_hints() -> Result<Vec<String>, String> {
     }
 
     Ok(hints)
+}
+
+#[tauri::command]
+fn recording_meter(session_id: String, state: State<'_, AppState>) -> Result<RecordingMeter, String> {
+    let (output_path, telemetry) = {
+        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        let session = sessions
+            .get(&session_id)
+            .ok_or_else(|| "Recording session not found".to_string())?;
+        (session.output_path.clone(), Arc::clone(&session.telemetry))
+    };
+
+    let file_bytes = fs::metadata(&output_path).map(|meta| meta.len()).unwrap_or(0);
+    let mut state = telemetry.lock().map_err(|e| e.to_string())?;
+    if file_bytes > state.bytes_written {
+        state.bytes_written = file_bytes;
+    }
+
+    Ok(RecordingMeter {
+        bytes_written: state.bytes_written,
+        level: state.level,
+    })
 }
 
 #[tauri::command]
@@ -948,10 +1296,35 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
 
     let base_data_dir = data_dir(&state)?;
     let entry_directory = ensure_entry_dirs(&base_data_dir, &entry_id)?;
-    let output_path = entry_directory.join("audio").join("original.wav");
+    let existing_path: Option<PathBuf> = conn
+        .query_row(
+            "SELECT recording_path FROM entries WHERE id = ?1",
+            params![entry_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| format!("Failed to read existing recording path: {e}"))?
+        .and_then(|path| {
+            let parsed = PathBuf::from(path);
+            if parsed.exists() {
+                Some(parsed)
+            } else {
+                None
+            }
+        });
+
+    let output_path = if existing_path.is_some() {
+        entry_directory
+            .join("audio")
+            .join(format!("segment-{}.wav", unix_now()))
+    } else {
+        entry_directory.join("audio").join("original.wav")
+    };
 
     let mut command = Command::new("ffmpeg");
     command.arg("-y");
+    command.arg("-nostats");
+    command.arg("-progress");
+    command.arg("pipe:2");
 
     for source in &sources {
         command.arg("-f");
@@ -960,17 +1333,24 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
         command.arg(&source.input);
     }
 
-    if sources.len() > 1 {
+    let filter_graph = if sources.len() > 1 {
         let mut input_refs = String::new();
         for index in 0..sources.len() {
             input_refs.push_str(&format!("[{index}:a]"));
         }
-        command.arg("-filter_complex");
-        command.arg(format!(
-            "{input_refs}amix=inputs={}:duration=longest:dropout_transition=2",
+        format!(
+            "{input_refs}amix=inputs={}:duration=longest:dropout_transition=2[mix];\
+[mix]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level[mout]",
             sources.len()
-        ));
-    }
+        )
+    } else {
+        "[0:a]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level[mout]"
+            .to_string()
+    };
+    command.arg("-filter_complex");
+    command.arg(filter_graph);
+    command.arg("-map");
+    command.arg("[mout]");
 
     command.arg("-ac");
     command.arg("1");
@@ -979,11 +1359,68 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
     command.arg(output_path.to_string_lossy().to_string());
     command.stdin(Stdio::piped());
     command.stdout(Stdio::null());
-    command.stderr(Stdio::null());
+    command.stderr(Stdio::piped());
 
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|e| format!("Failed to start ffmpeg recording: {e}"))?;
+
+    let telemetry = Arc::new(Mutex::new(RecordingTelemetry::default()));
+    if let Some(stderr) = child.stderr.take() {
+        let telemetry_clone = Arc::clone(&telemetry);
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(value) = line.strip_prefix("total_size=") {
+                    if let Ok(bytes) = value.trim().parse::<u64>() {
+                        if let Ok(mut state) = telemetry_clone.lock() {
+                            state.bytes_written = bytes;
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some(value) = line.strip_prefix("out_time_us=") {
+                    if let Ok(micros) = value.trim().parse::<u64>() {
+                        let estimated = estimated_pcm_bytes_from_us(micros);
+                        if let Ok(mut state) = telemetry_clone.lock() {
+                            if estimated > state.bytes_written {
+                                state.bytes_written = estimated;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some(pos) = line.find("lavfi.astats.Overall.RMS_level=") {
+                    let value = &line[(pos + "lavfi.astats.Overall.RMS_level=".len())..];
+                    let trimmed = value.trim();
+                    let mapped = if trimmed.eq_ignore_ascii_case("-inf") {
+                        0.0
+                    } else if let Ok(db) = trimmed.parse::<f32>() {
+                        rms_db_to_level(db)
+                    } else {
+                        continue;
+                    };
+                    if let Ok(mut state) = telemetry_clone.lock() {
+                        state.level = (state.level * 0.6 + mapped * 0.4).clamp(0.0, 1.0);
+                    }
+                }
+            }
+        });
+    }
+
+    // If ffmpeg exits immediately, surface a clear error instead of creating a dead session.
+    thread::sleep(Duration::from_millis(350));
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|e| format!("Failed to inspect ffmpeg process status: {e}"))?
+    {
+        return Err(format!(
+            "Recording failed to start (ffmpeg exited with status {status}). \
+Check recording source format/input values and macOS microphone permissions."
+        ));
+    }
 
     conn.execute(
         "UPDATE entries SET status = 'recording', updated_at = ?1 WHERE id = ?2",
@@ -998,7 +1435,10 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
         RecordingSession {
             entry_id,
             output_path,
+            existing_path,
             child,
+            telemetry,
+            paused: false,
         },
     );
 
@@ -1012,6 +1452,12 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
         .remove(&session_id)
         .ok_or_else(|| "Recording session not found".to_string())?;
 
+    if session.paused {
+        let pid = session.child.id();
+        set_process_paused(pid, false)?;
+        session.paused = false;
+    }
+
     if let Some(mut stdin) = session.child.stdin.take() {
         let _ = stdin.write_all(b"q\n");
     }
@@ -1021,7 +1467,26 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
     let db = db_path(&state)?;
     let conn = connection(&db)?;
 
-    let recording_path = session.output_path.to_string_lossy().to_string();
+    let final_path = if let Some(existing) = &session.existing_path {
+        if existing.exists() && session.output_path.exists() {
+            let merged = existing
+                .parent()
+                .unwrap_or(existing.as_path())
+                .join(format!("merged-{}.wav", unix_now()));
+            concat_recordings(existing, &session.output_path, &merged)?;
+            let _ = fs::remove_file(existing);
+            fs::rename(&merged, existing)
+                .map_err(|e| format!("Failed to finalize merged recording: {e}"))?;
+            let _ = fs::remove_file(&session.output_path);
+            existing.clone()
+        } else {
+            session.output_path.clone()
+        }
+    } else {
+        session.output_path.clone()
+    };
+
+    let recording_path = final_path.to_string_lossy().to_string();
     let duration_sec = probe_duration_seconds(&recording_path);
 
     conn.execute(
@@ -1032,6 +1497,22 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
     )
     .map_err(|e| format!("Failed to finalize recording entry state: {e}"))?;
 
+    Ok(())
+}
+
+#[tauri::command]
+fn set_recording_paused(session_id: String, paused: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "Recording session not found".to_string())?;
+    if session.paused == paused {
+        return Ok(());
+    }
+
+    let pid = session.child.id();
+    set_process_paused(pid, paused)?;
+    session.paused = paused;
     Ok(())
 }
 
@@ -1070,31 +1551,48 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
 
     let mut command = Command::new(whisper_bin);
     if whisper_bin == "whisper-cli" {
+        let model_path = resolve_whisper_model_path(&base_data_dir)?;
+        let language_requested = language
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "auto".to_string());
+        let english_only_model = model_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.ends_with(".en.bin"))
+            .unwrap_or(false);
+        if language_requested == "auto" && english_only_model {
+            return Err(
+                "Current Whisper model is English-only and cannot auto-detect/transcribe other languages. Install a multilingual model (ggml-tiny.bin or ggml-base.bin)."
+                    .to_string(),
+            );
+        }
+        // Use CPU mode for stability on some macOS setups where GPU backend crashes.
+        command.arg("-ng");
+        command.arg("-m").arg(model_path.to_string_lossy().to_string());
         command.arg("-f").arg(&recording_path);
         command.arg("-otxt");
         command.arg("-of").arg(output_base.to_string_lossy().to_string());
-        if let Some(lang) = &language {
-            if lang != "auto" && !lang.trim().is_empty() {
-                command.arg("--language").arg(lang);
-            }
-        }
+        command.arg("--language").arg(language_requested);
     } else {
         command.arg(&recording_path);
         command.arg("--output_format").arg("txt");
         command.arg("--output_dir").arg(transcript_dir.to_string_lossy().to_string());
-        if let Some(lang) = &language {
-            if lang != "auto" && !lang.trim().is_empty() {
-                command.arg("--language").arg(lang);
-            }
-        }
+        let lang_value = language
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "auto".to_string());
+        command.arg("--language").arg(lang_value);
     }
 
     let output = command
         .output()
         .map_err(|e| format!("Failed to run Whisper command: {e}"))?;
+    let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
-        let stderr_text = String::from_utf8_lossy(&output.stderr);
         return Err(format!("Whisper transcription failed: {stderr_text}"));
     }
 
@@ -1115,9 +1613,20 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
 
     let transcript_text = fs::read_to_string(&transcript_path)
         .map_err(|e| format!("Failed to read transcript output: {e}"))?;
+    if transcript_text.trim().is_empty() {
+        return Err(
+            "Transcription returned empty text. Check that speech was audible in the recording and that the selected input devices are correct."
+                .to_string(),
+        );
+    }
 
     let version = get_next_transcript_version(&conn, &entry_id)?;
-    let language_value = language.unwrap_or_else(|| "auto".to_string());
+    let mut language_value = language.unwrap_or_else(|| "auto".to_string());
+    if language_value.eq_ignore_ascii_case("auto") {
+        if let Some(detected) = parse_whisper_detected_language(&stderr_text) {
+            language_value = detected;
+        }
+    }
 
     conn.execute(
         "INSERT INTO transcript_revisions(id, entry_id, version, text, language, is_manual_edit, created_at)
@@ -1424,7 +1933,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            list_recording_devices,
             list_audio_device_hints,
+            recording_meter,
             bootstrap_state,
             get_entry_bundle,
             create_folder,
@@ -1435,6 +1946,7 @@ pub fn run() {
             restore_from_trash,
             purge_entity,
             start_recording,
+            set_recording_paused,
             stop_recording,
             transcribe_entry,
             generate_artifact,

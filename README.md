@@ -51,6 +51,12 @@ npm run tauri dev
 npm run qa:mac:preflight
 ```
 
+If preflight reports missing Whisper model, install it:
+
+```bash
+bash scripts/macos/install-whisper-model.sh
+```
+
 2. Generate a timestamped smoke-test report template:
 
 ```bash

@@ -26,6 +26,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -52,6 +53,19 @@ textarea {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.header-action-group {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.header-action-group input {
+  min-width: 180px;
+  max-width: 220px;
+  padding: 6px 8px;
 }
 
 .layout-grid {
@@ -164,12 +178,13 @@ button:disabled {
 
 .source-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.4fr auto;
+  grid-template-columns: 1fr auto;
   gap: 8px;
   margin-bottom: 8px;
 }
 
 input,
+select,
 textarea {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -223,6 +238,53 @@ textarea {
   background: #e8f9f4;
   border: 1px solid #b9eadc;
   color: var(--accent-strong);
+}
+
+.status-pill {
+  display: inline-block;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  padding: 4px 10px;
+  background: #f3f6fa;
+  color: var(--ink);
+}
+
+.status-pill.recording {
+  background: #ffe9eb;
+  border-color: #f4b6bf;
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.recording-monitor {
+  margin-top: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fbff;
+}
+
+.recording-live {
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.meter-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.meter-bar {
+  width: 6px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #18a582 0%, #00725f 100%);
+  display: inline-block;
 }
 
 .artifact-block {

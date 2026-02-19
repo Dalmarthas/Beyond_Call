@@ -8,6 +8,7 @@ import type {
   EntryBundle,
   Folder,
   PromptRole,
+  RecordingDevice,
   RecordingSource
 } from "./lib/types";
 import "./styles/app.css";
@@ -24,6 +25,16 @@ const ARTIFACT_TYPES: { type: ArtifactType; label: string }[] = [
   { type: "critique_recruitment", label: "Critique: Recruitment" },
   { type: "critique_sales", label: "Critique: Sales" },
   { type: "critique_cs", label: "Critique: Customer Success" }
+];
+
+const TRANSCRIPTION_LANGUAGES: { value: string; label: string }[] = [
+  { value: "auto", label: "Auto detect" },
+  { value: "ru", label: "Russian" },
+  { value: "en", label: "English" },
+  { value: "uk", label: "Ukrainian" },
+  { value: "es", label: "Spanish" },
+  { value: "de", label: "German" },
+  { value: "fr", label: "French" }
 ];
 
 function latestByType(revisions: ArtifactRevision[], type: ArtifactType) {
@@ -59,11 +70,10 @@ export default function App() {
   const [entryBundle, setEntryBundle] = useState<EntryBundle | null>(null);
   const [recordingSessionId, setRecordingSessionId] = useState<string | null>(null);
   const [sources, setSources] = useState<RecordingSource[]>([
-    { label: "Microphone", format: "avfoundation", input: ":0" },
-    { label: "Loopback/System", format: "avfoundation", input: ":1" }
+    { label: "Microphone", format: "avfoundation", input: ":0" }
   ]);
   const [transcriptDraft, setTranscriptDraft] = useState<string>("");
-  const [deviceHints, setDeviceHints] = useState<string[]>([]);
+  const [recordingDevices, setRecordingDevices] = useState<RecordingDevice[]>([]);
   const [artifactDrafts, setArtifactDrafts] = useState<Record<ArtifactType, string>>({
     summary: "",
     analysis: "",
@@ -79,9 +89,18 @@ export default function App() {
     critique_cs: ""
   });
   const [modelName, setModelName] = useState<string>("qwen3:8b");
+  const [newRootFolderName, setNewRootFolderName] = useState("");
+  const [newSubfolderName, setNewSubfolderName] = useState("");
+  const [newEntryTitle, setNewEntryTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [transcribingAfterStop, setTranscribingAfterStop] = useState(false);
+  const [recordingPaused, setRecordingPaused] = useState(false);
+  const [recordingLevel, setRecordingLevel] = useState(0);
+  const [recordingBytes, setRecordingBytes] = useState(0);
+  const [meterBars, setMeterBars] = useState<number[]>(() => Array.from({ length: 24 }, () => 0.02));
+  const [transcriptionLanguage, setTranscriptionLanguage] = useState<string>("auto");
 
   const activeEntry = useMemo(() => {
     if (!bootstrap || !selectedEntryId) {
@@ -107,6 +126,19 @@ export default function App() {
     () => bootstrap?.entries.filter((entry) => entry.deleted_at) ?? [],
     [bootstrap]
   );
+  const hasLoopbackDevice = useMemo(
+    () => recordingDevices.some((device) => device.is_loopback),
+    [recordingDevices]
+  );
+  const selectedLoopbackOnly = useMemo(() => {
+    if (sources.length === 0) {
+      return false;
+    }
+    return sources.every((source) => {
+      const device = recordingDevices.find((item) => deviceKey(item) === sourceKey(source));
+      return Boolean(device?.is_loopback);
+    });
+  }, [recordingDevices, sources]);
 
   async function reloadBootstrap(keepSelection = true) {
     const data = await api.bootstrapState();
@@ -118,17 +150,22 @@ export default function App() {
     }
     setPromptDrafts(nextPrompts);
 
+    const firstFolder = data.folders.find((folder) => !folder.deleted_at);
+
     if (!keepSelection) {
-      const firstFolder = data.folders.find((folder) => !folder.deleted_at);
       setSelectedFolderId(firstFolder?.id ?? null);
       setSelectedEntryId(null);
       setEntryBundle(null);
     }
 
-    if (keepSelection && selectedFolderId) {
-      const exists = data.folders.some((folder) => folder.id === selectedFolderId && !folder.deleted_at);
-      if (!exists) {
-        setSelectedFolderId(null);
+    if (keepSelection) {
+      if (selectedFolderId) {
+        const exists = data.folders.some((folder) => folder.id === selectedFolderId && !folder.deleted_at);
+        if (!exists) {
+          setSelectedFolderId(firstFolder?.id ?? null);
+        }
+      } else {
+        setSelectedFolderId(firstFolder?.id ?? null);
       }
     }
 
@@ -147,6 +184,11 @@ export default function App() {
 
     const latestTranscript = bundle.transcript_revisions.sort((a, b) => b.version - a.version)[0];
     setTranscriptDraft(latestTranscript?.text ?? "");
+    setTranscriptionLanguage(
+      latestTranscript?.language && latestTranscript.language.trim().length > 0
+        ? latestTranscript.language
+        : "auto"
+    );
 
     const nextDrafts: Record<ArtifactType, string> = {
       summary: "",
@@ -196,6 +238,7 @@ export default function App() {
       setError(null);
       try {
         await reloadBootstrap(false);
+        await loadRecordingDevices();
       } catch (taskError) {
         const message = taskError instanceof Error ? taskError.message : String(taskError);
         setError(message);
@@ -206,6 +249,49 @@ export default function App() {
     bootstrap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!recordingSessionId) {
+      setRecordingLevel(0);
+      setRecordingBytes(0);
+      setMeterBars(Array.from({ length: 24 }, () => 0.02));
+      return;
+    }
+
+    let cancelled = false;
+    const pollMeter = async () => {
+      try {
+        const meter = await api.getRecordingMeter(recordingSessionId);
+        if (cancelled) {
+          return;
+        }
+
+        const normalizedLevel = Math.max(0, Math.min(1, meter.level));
+        setRecordingLevel(normalizedLevel);
+        setRecordingBytes(meter.bytes_written);
+        setMeterBars((previous) => {
+          const next = [...previous.slice(1)];
+          const bar = normalizedLevel < 0.02
+            ? 0.02
+            : Math.min(1, normalizedLevel * 0.95 + 0.03);
+          next.push(bar);
+          return next;
+        });
+      } catch {
+        // keep last known meter values while polling retries
+      }
+    };
+
+    void pollMeter();
+    const timer = window.setInterval(() => {
+      void pollMeter();
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [recordingSessionId]);
 
   const folderTree = useMemo(() => {
     if (!bootstrap) {
@@ -254,61 +340,133 @@ export default function App() {
     ));
   }
 
+  function defaultLabel(prefix: string) {
+    const datePart = new Date().toISOString().slice(0, 16).replace("T", " ");
+    return `${prefix} ${datePart}`;
+  }
+
+  function formatBytes(value: number) {
+    if (value < 1024) {
+      return `${value} B`;
+    }
+    if (value < 1024 * 1024) {
+      return `${Math.round(value / 1024)} KB`;
+    }
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function sourceKey(source: RecordingSource) {
+    return `${source.format}::${source.input}`;
+  }
+
+  function deviceKey(device: RecordingDevice) {
+    return `${device.format}::${device.input}`;
+  }
+
+  function sourceFromDevice(device: RecordingDevice): RecordingSource {
+    return {
+      label: device.name,
+      format: device.format,
+      input: device.input
+    };
+  }
+
+  async function loadRecordingDevices() {
+    const devices = await api.listRecordingDevices();
+    setRecordingDevices(devices);
+    if (devices.length === 0) {
+      return;
+    }
+
+    setSources((current) => {
+      if (current.length === 0) {
+        return [sourceFromDevice(devices[0])];
+      }
+
+      return current.map((source, index) => {
+        const exact = devices.find((device) => deviceKey(device) === sourceKey(source));
+        if (exact) {
+          return sourceFromDevice(exact);
+        }
+        const fallback = devices[Math.min(index, devices.length - 1)] ?? devices[0];
+        return sourceFromDevice(fallback);
+      });
+    });
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
         <h1>AI Call Recorder Local</h1>
         <div className="header-actions">
-          <button
-            onClick={() => {
-              const name = window.prompt("Root folder name");
-              if (!name) {
-                return;
-              }
-              runTask(async () => {
-                await api.createFolder(name, null);
-              }, "Root folder created");
-            }}
-            disabled={busy}
-          >
-            + Root Folder
-          </button>
-          <button
-            onClick={() => {
-              if (!selectedFolderId) {
-                setError("Select a folder first");
-                return;
-              }
-              const name = window.prompt("Subfolder name");
-              if (!name) {
-                return;
-              }
-              runTask(async () => {
-                await api.createFolder(name, selectedFolderId);
-              }, "Subfolder created");
-            }}
-            disabled={busy || !selectedFolderId}
-          >
-            + Subfolder
-          </button>
-          <button
-            onClick={() => {
-              if (!selectedFolderId) {
-                setError("Select a folder first");
-                return;
-              }
-              const title = window.prompt("Entry title");
-              if (!title) {
-                return;
-              }
-              runTask(async () => {
-                await api.createEntry(selectedFolderId, title);
-              }, "Entry created");
-            }}
-            disabled={busy || !selectedFolderId}
-          >
-            + Entry
-          </button>
+          <div className="header-action-group">
+            <input
+              value={newRootFolderName}
+              onChange={(event) => setNewRootFolderName(event.target.value)}
+              placeholder="Root folder name (optional)"
+              disabled={busy}
+            />
+            <button
+              onClick={() => {
+                const name = newRootFolderName.trim() || defaultLabel("Root Folder");
+                runTask(async () => {
+                  await api.createFolder(name, null);
+                  setNewRootFolderName("");
+                }, "Root folder created");
+              }}
+              disabled={busy}
+            >
+              + Root Folder
+            </button>
+          </div>
+          <div className="header-action-group">
+            <input
+              value={newSubfolderName}
+              onChange={(event) => setNewSubfolderName(event.target.value)}
+              placeholder="Subfolder name (optional)"
+              disabled={busy || !selectedFolderId}
+            />
+            <button
+              onClick={() => {
+                if (!selectedFolderId) {
+                  setError("Select a folder first");
+                  return;
+                }
+                const name = newSubfolderName.trim() || defaultLabel("Subfolder");
+                runTask(async () => {
+                  await api.createFolder(name, selectedFolderId);
+                  setNewSubfolderName("");
+                }, "Subfolder created");
+              }}
+              disabled={busy || !selectedFolderId}
+            >
+              + Subfolder
+            </button>
+          </div>
+          <div className="header-action-group">
+            <input
+              value={newEntryTitle}
+              onChange={(event) => setNewEntryTitle(event.target.value)}
+              placeholder="Entry title (optional)"
+              disabled={busy || !selectedFolderId}
+            />
+            <button
+              onClick={() => {
+                if (!selectedFolderId) {
+                  setError("Select a folder first");
+                  return;
+                }
+                const title = newEntryTitle.trim() || defaultLabel("Entry");
+                runTask(async () => {
+                  await api.createEntry(selectedFolderId, title);
+                  setNewEntryTitle("");
+                }, "Entry created");
+              }}
+              disabled={busy || !selectedFolderId}
+            >
+              + Entry
+            </button>
+          </div>
         </div>
       </header>
 
@@ -403,62 +561,85 @@ export default function App() {
               <p>
                 <strong>{activeEntry.title}</strong>
               </p>
-              <p>Status: {activeEntry.status}</p>
+              <p
+                className={
+                  (recordingSessionId ? "recording" : activeEntry.status) === "recording"
+                    ? "status-pill recording"
+                    : "status-pill"
+                }
+              >
+                Status: {recordingSessionId ? "recording" : activeEntry.status}
+                {recordingPaused ? " (paused)" : ""}
+                {transcribingAfterStop ? " (transcribing)" : ""}
+              </p>
               <p>Duration: {activeEntry.duration_sec}s</p>
 
               <h3>Recording Sources</h3>
               <p className="help-text">
-                Use `avfoundation` on macOS (`:0`, `:1`) or `dshow` on Windows (device name). These
-                map directly to ffmpeg inputs.
+                Pick devices by name. For speaker/call audio on macOS, install a loopback device
+                (for example BlackHole) and select it here.
+              </p>
+              <p className="help-text">
+                macOS loopback setup: 1) Open Audio MIDI Setup. 2) Create a Multi-Output Device
+                with your speakers + BlackHole 2ch. 3) Set your call app output to that
+                Multi-Output device. 4) Keep microphone as a separate source in this app.
               </p>
               <button
                 disabled={busy}
                 onClick={() =>
                   runTask(async () => {
-                    const hints = await api.listAudioDeviceHints();
-                    setDeviceHints(hints);
-                  }, "Audio device hints loaded")
+                    await loadRecordingDevices();
+                  }, "Audio devices refreshed")
                 }
               >
-                Detect Audio Inputs
+                Refresh Audio Devices
               </button>
-              {deviceHints.length > 0 && (
+              {!hasLoopbackDevice && recordingDevices.length > 0 && (
+                <p className="help-text">
+                  No loopback/speaker device detected yet. Install and configure BlackHole to record
+                  audio coming from your speakers/call app.
+                </p>
+              )}
+              {recordingDevices.length > 0 && (
                 <div className="hint-box">
                   <strong>Detected Devices</strong>
-                  {deviceHints.map((hint) => (
-                    <code key={hint}>{hint}</code>
+                  {recordingDevices.map((device) => (
+                    <code key={deviceKey(device)}>
+                      {device.name}
+                      {device.is_loopback ? " (Loopback/System)" : ""}
+                    </code>
                   ))}
                 </div>
               )}
+              {recordingDevices.length === 0 && (
+                <p className="help-text">
+                  No audio devices detected yet. Click "Refresh Audio Devices".
+                </p>
+              )}
               {sources.map((source, index) => (
                 <div className="source-row" key={`${source.label}-${index}`}>
-                  <input
-                    value={source.label}
+                  <select
+                    value={sourceKey(source)}
                     onChange={(event) => {
+                      const selected = recordingDevices.find(
+                        (device) => deviceKey(device) === event.target.value
+                      );
+                      if (!selected) {
+                        return;
+                      }
                       const next = [...sources];
-                      next[index] = { ...next[index], label: event.target.value };
+                      next[index] = sourceFromDevice(selected);
                       setSources(next);
                     }}
-                    placeholder="Label"
-                  />
-                  <input
-                    value={source.format}
-                    onChange={(event) => {
-                      const next = [...sources];
-                      next[index] = { ...next[index], format: event.target.value };
-                      setSources(next);
-                    }}
-                    placeholder="ffmpeg format"
-                  />
-                  <input
-                    value={source.input}
-                    onChange={(event) => {
-                      const next = [...sources];
-                      next[index] = { ...next[index], input: event.target.value };
-                      setSources(next);
-                    }}
-                    placeholder="ffmpeg input"
-                  />
+                    disabled={busy || recordingDevices.length === 0}
+                  >
+                    {recordingDevices.map((device) => (
+                      <option key={deviceKey(device)} value={deviceKey(device)}>
+                        {device.name}
+                        {device.is_loopback ? " (Loopback/System)" : ""}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     disabled={busy || sources.length <= 1}
                     onClick={() => setSources(sources.filter((_, i) => i !== index))}
@@ -468,10 +649,20 @@ export default function App() {
                 </div>
               ))}
               <button
-                disabled={busy}
-                onClick={() =>
-                  setSources([...sources, { label: "New Source", format: "avfoundation", input: ":0" }])
-                }
+                disabled={busy || recordingDevices.length === 0}
+                onClick={() => {
+                  const used = new Set(sources.map((source) => sourceKey(source)));
+                  const candidate =
+                    recordingDevices.find(
+                      (device) => device.is_loopback && !used.has(deviceKey(device))
+                    ) ??
+                    recordingDevices.find((device) => !used.has(deviceKey(device))) ??
+                    recordingDevices[0];
+                  if (!candidate) {
+                    return;
+                  }
+                  setSources([...sources, sourceFromDevice(candidate)]);
+                }}
               >
                 + Add Source
               </button>
@@ -479,40 +670,109 @@ export default function App() {
               <div className="action-row">
                 {!recordingSessionId ? (
                   <button
-                    disabled={busy}
+                    disabled={busy || transcribingAfterStop || sources.length === 0}
                     onClick={() => {
-                      const confirmed = window.confirm(
-                        "Confirm you have consent to record this call under your local laws."
-                      );
-                      if (!confirmed) {
-                        return;
-                      }
-
                       runTask(async () => {
                         const sessionId = await api.startRecording(activeEntry.id, sources);
                         setRecordingSessionId(sessionId);
+                        setRecordingPaused(false);
                       }, "Recording started");
                     }}
                   >
                     Start Recording
                   </button>
                 ) : (
-                  <button
-                    disabled={busy}
-                    onClick={() => {
-                      runTask(async () => {
-                        await api.stopRecording(recordingSessionId);
-                        setRecordingSessionId(null);
-                      }, "Recording stopped");
-                    }}
-                  >
-                    Stop Recording
-                  </button>
+                  <>
+                    {!recordingPaused ? (
+                      <button
+                        disabled={busy || transcribingAfterStop}
+                        onClick={() => {
+                          if (!recordingSessionId) {
+                            return;
+                          }
+                          runTask(
+                            async () => {
+                              await api.setRecordingPaused(recordingSessionId, true);
+                              setRecordingPaused(true);
+                            },
+                            "Recording paused"
+                          );
+                        }}
+                      >
+                        Pause
+                      </button>
+                    ) : (
+                      <button
+                        disabled={busy || transcribingAfterStop}
+                        onClick={() => {
+                          if (!recordingSessionId) {
+                            return;
+                          }
+                          runTask(
+                            async () => {
+                              await api.setRecordingPaused(recordingSessionId, false);
+                              setRecordingPaused(false);
+                            },
+                            "Recording resumed"
+                          );
+                        }}
+                      >
+                        Resume
+                      </button>
+                    )}
+                    <button
+                      disabled={busy || transcribingAfterStop}
+                      onClick={async () => {
+                        if (!recordingSessionId) {
+                          return;
+                        }
+                        const sessionId = recordingSessionId;
+                        setBusy(true);
+                        setError(null);
+                        setNotice(null);
+                        try {
+                          await api.stopRecording(sessionId);
+                          setRecordingSessionId(null);
+                          setRecordingPaused(false);
+                          await reloadBootstrap(true);
+                          setNotice("Recording stopped. Transcribing...");
+                        } catch (taskError) {
+                          const message = taskError instanceof Error ? taskError.message : String(taskError);
+                          setError(message);
+                          setBusy(false);
+                          return;
+                        } finally {
+                          setBusy(false);
+                        }
+
+                        setTranscribingAfterStop(true);
+                        try {
+                          await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
+                          await reloadBootstrap(true);
+                          await loadEntryBundle(activeEntry.id);
+                          setNotice("Recording stopped and transcribed");
+                        } catch (taskError) {
+                          const message = taskError instanceof Error ? taskError.message : String(taskError);
+                          setNotice(null);
+                          setError(message);
+                        } finally {
+                          setTranscribingAfterStop(false);
+                        }
+                      }}
+                    >
+                      Stop Recording
+                    </button>
+                  </>
                 )}
 
                 <button
-                  disabled={busy}
-                  onClick={() => runTask(async () => api.transcribeEntry(activeEntry.id), "Transcription ready")}
+                  disabled={busy || transcribingAfterStop}
+                  onClick={() =>
+                    runTask(
+                      async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
+                      "Transcription ready"
+                    )
+                  }
                 >
                   Transcribe
                 </button>
@@ -520,7 +780,7 @@ export default function App() {
                 {ARTIFACT_TYPES.map((item) => (
                   <button
                     key={item.type}
-                    disabled={busy}
+                    disabled={busy || transcribingAfterStop}
                     onClick={() =>
                       runTask(
                         async () => api.generateArtifact(activeEntry.id, item.type),
@@ -533,7 +793,7 @@ export default function App() {
                 ))}
 
                 <button
-                  disabled={busy}
+                  disabled={busy || transcribingAfterStop}
                   onClick={() => {
                     runTask(async () => {
                       const path = await api.exportEntry(activeEntry.id);
@@ -545,7 +805,56 @@ export default function App() {
                 </button>
               </div>
 
+              {(recordingSessionId || transcribingAfterStop) && (
+                <div className="recording-monitor">
+                  <p className="recording-live">
+                    {recordingSessionId ? "Recording in progress" : "Transcribing latest recording"}
+                  </p>
+                  {recordingSessionId && (
+                    <>
+                      <div className="meter-strip" aria-label="Recording signal meter">
+                        {meterBars.map((bar, index) => (
+                          <span
+                            key={`bar-${index}`}
+                            className="meter-bar"
+                            style={{ height: `${Math.round(8 + bar * 34)}px` }}
+                          />
+                        ))}
+                      </div>
+                      <p className="help-text">
+                        Signal level: {Math.round(recordingLevel * 100)}% | Captured:{" "}
+                        {formatBytes(recordingBytes)}
+                      </p>
+                      {selectedLoopbackOnly && recordingLevel < 0.03 && (
+                        <p className="help-text">
+                          Loopback input appears silent. Ensure your call/browser output is routed to
+                          BlackHole (or a Multi-Output Device that includes BlackHole).
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
               <h3>Transcript</h3>
+              <label>
+                Transcription Language
+                <select
+                  value={transcriptionLanguage}
+                  disabled={busy || Boolean(recordingSessionId)}
+                  onChange={(event) => setTranscriptionLanguage(event.target.value)}
+                >
+                  {TRANSCRIPTION_LANGUAGES.map((language) => (
+                    <option key={language.value} value={language.value}>
+                      {language.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="help-text">
+                Use Auto for mixed calls. If Auto is wrong, force the spoken language (for example
+                Russian) to transcribe in that language, not English.
+              </p>
               {latestTranscript && (
                 <p className="help-text">
                   Version {latestTranscript.version} | Language: {latestTranscript.language} | Updated:
@@ -562,7 +871,7 @@ export default function App() {
               <button
                 disabled={busy || !activeEntry}
                 onClick={() => {
-                  const language = latestTranscript?.language ?? "auto";
+                  const language = transcriptionLanguage || latestTranscript?.language || "auto";
                   runTask(
                     async () => api.updateTranscript(activeEntry.id, transcriptDraft, language),
                     "Transcript saved"

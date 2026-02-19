@@ -78,3 +78,15 @@ export interface RecordingSource {
   format: string;
   input: string;
 }
+
+export interface RecordingDevice {
+  name: string;
+  format: string;
+  input: string;
+  is_loopback: boolean;
+}
+
+export interface RecordingMeter {
+  bytes_written: number;
+  level: number;
+}

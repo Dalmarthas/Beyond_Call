@@ -4,6 +4,8 @@ import type {
   BootstrapState,
   EntryBundle,
   PromptRole,
+  RecordingDevice,
+  RecordingMeter,
   RecordingSource
 } from "./types";
 
@@ -27,8 +29,12 @@ export const api = {
     invoke<void>("purge_entity", { entityType, id }),
   startRecording: (entryId: string, sources: RecordingSource[]) =>
     invoke<string>("start_recording", { entryId, sources }),
+  setRecordingPaused: (sessionId: string, paused: boolean) =>
+    invoke<void>("set_recording_paused", { sessionId, paused }),
   stopRecording: (sessionId: string) =>
     invoke<void>("stop_recording", { sessionId }),
+  getRecordingMeter: (sessionId: string) =>
+    invoke<RecordingMeter>("recording_meter", { sessionId }),
   transcribeEntry: (entryId: string, language: string | null = null) =>
     invoke<void>("transcribe_entry", { entryId, language }),
   generateArtifact: (entryId: string, artifactType: ArtifactType) =>
@@ -41,6 +47,7 @@ export const api = {
     invoke<void>("update_prompt_template", { role, promptText }),
   updateModelName: (modelName: string) =>
     invoke<void>("update_model_name", { modelName }),
+  listRecordingDevices: () => invoke<RecordingDevice[]>("list_recording_devices"),
   listAudioDeviceHints: () => invoke<string[]>("list_audio_device_hints"),
   exportEntry: (entryId: string) =>
     invoke<string>("export_entry_markdown", { entryId })
