@@ -8,24 +8,37 @@ enum RecorderError: Error {
     case unsupportedMacOS
     case noDisplayFound
     case writerInputRejected
+    case invalidMicrophoneArguments
 }
 
 final class SystemAudioRecorder: NSObject, SCStreamOutput {
     private let outputURL: URL
+    private let microphoneOutputURL: URL?
+    private let microphoneDeviceID: String?
     private let sampleHandlerQueue = DispatchQueue(label: "com.niberium.ai-transcribe.sck-audio")
     private var stream: SCStream?
-    private var writer: AVAssetWriter?
-    private var writerInput: AVAssetWriterInput?
+    private var systemWriter: AVAssetWriter?
+    private var systemWriterInput: AVAssetWriterInput?
+    private var microphoneWriter: AVAssetWriter?
+    private var microphoneWriterInput: AVAssetWriterInput?
     private var stopContinuation: CheckedContinuation<Void, Never>?
     private var stopRequested = false
     private var startedAt = Date()
     private var lastTelemetry = Date.distantPast
     private var smoothedLevel: Float = 0
-    private var hasReceivedAudioSample = false
-    private var emittedNoSampleError = false
+    private var hasReceivedSystemSample = false
+    private var hasReceivedMicrophoneSample = false
+    private var emittedNoSystemSampleError = false
+    private var emittedNoMicrophoneSampleError = false
 
-    init(outputURL: URL) {
+    var capturesMicrophone: Bool {
+        microphoneOutputURL != nil
+    }
+
+    init(outputURL: URL, microphoneOutputURL: URL?, microphoneDeviceID: String?) {
         self.outputURL = outputURL
+        self.microphoneOutputURL = microphoneOutputURL
+        self.microphoneDeviceID = microphoneDeviceID
         super.init()
     }
 
@@ -33,11 +46,21 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         guard #available(macOS 13.0, *) else {
             throw RecorderError.unsupportedMacOS
         }
+        if capturesMicrophone, #unavailable(macOS 15.0) {
+            throw RecorderError.unsupportedMacOS
+        }
 
         let parentDir = outputURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try FileManager.default.removeItem(at: outputURL)
+        }
+        if let microphoneOutputURL {
+            let parentDir = microphoneOutputURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: microphoneOutputURL.path) {
+                try FileManager.default.removeItem(at: microphoneOutputURL)
+            }
         }
 
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -52,9 +75,20 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         configuration.sampleRate = 16_000
         configuration.channelCount = 1
         configuration.queueDepth = 8
+        if capturesMicrophone, #available(macOS 15.0, *) {
+            configuration.captureMicrophone = true
+            if let microphoneDeviceID, !microphoneDeviceID.isEmpty {
+                configuration.microphoneCaptureDeviceID = microphoneDeviceID
+            } else {
+                configuration.microphoneCaptureDeviceID = AVCaptureDevice.default(for: .audio)?.uniqueID
+            }
+        }
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleHandlerQueue)
+        if capturesMicrophone, #available(macOS 15.0, *) {
+            try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleHandlerQueue)
+        }
         self.stream = stream
 
         monitorStdinForStopSignal()
@@ -71,37 +105,39 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
-        guard outputType == .audio else {
-            return
-        }
         guard CMSampleBufferIsValid(sampleBuffer) else {
             return
         }
-        hasReceivedAudioSample = true
 
-        if writer == nil {
-            do {
-                try initializeWriter(with: sampleBuffer)
-            } catch {
-                fputs("sck_error=Failed to initialize writer: \(error)\n", stderr)
-                fflush(stderr)
-                requestStop()
-                return
+        switch outputType {
+        case .audio:
+            hasReceivedSystemSample = true
+            if systemWriter == nil {
+                do {
+                    try initializeSystemWriter(with: sampleBuffer)
+                } catch {
+                    fputs("sck_error=Failed to initialize system writer: \(error)\n", stderr)
+                    fflush(stderr)
+                    requestStop()
+                    return
+                }
             }
-        }
-
-        guard let writerInput else {
-            return
-        }
-
-        if writerInput.isReadyForMoreMediaData {
-            if !writerInput.append(sampleBuffer) {
-                let details = writer?.error.map { "\($0)" } ?? "unknown append failure"
-                fputs("sck_error=Failed to append audio sample to writer: \(details)\n", stderr)
-                fflush(stderr)
-                requestStop()
-                return
+            appendToSystemWriter(sampleBuffer)
+        case .microphone:
+            hasReceivedMicrophoneSample = true
+            if microphoneWriter == nil {
+                do {
+                    try initializeMicrophoneWriter(with: sampleBuffer)
+                } catch {
+                    fputs("sck_error=Failed to initialize microphone writer: \(error)\n", stderr)
+                    fflush(stderr)
+                    requestStop()
+                    return
+                }
             }
+            appendToMicrophoneWriter(sampleBuffer)
+        default:
+            break
         }
 
         let level = computeRmsLevel(from: sampleBuffer)
@@ -109,10 +145,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         emitTelemetry(force: false)
     }
 
-    private func initializeWriter(with sampleBuffer: CMSampleBuffer) throws {
-        _ = CMSampleBufferGetFormatDescription(sampleBuffer)
-
-        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .wav)
+    private func makeAudioWriterInput() -> AVAssetWriterInput {
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
@@ -127,6 +160,14 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
             outputSettings: outputSettings
         )
         input.expectsMediaDataInRealTime = true
+        return input
+    }
+
+    private func initializeSystemWriter(with sampleBuffer: CMSampleBuffer) throws {
+        _ = CMSampleBufferGetFormatDescription(sampleBuffer)
+
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .wav)
+        let input = makeAudioWriterInput()
         guard writer.canAdd(input) else {
             throw RecorderError.writerInputRejected
         }
@@ -138,8 +179,59 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
 
         let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         writer.startSession(atSourceTime: startTime)
-        self.writer = writer
-        self.writerInput = input
+        self.systemWriter = writer
+        self.systemWriterInput = input
+    }
+
+    private func initializeMicrophoneWriter(with sampleBuffer: CMSampleBuffer) throws {
+        guard let microphoneOutputURL else {
+            throw RecorderError.invalidMicrophoneArguments
+        }
+        _ = CMSampleBufferGetFormatDescription(sampleBuffer)
+
+        let writer = try AVAssetWriter(outputURL: microphoneOutputURL, fileType: .wav)
+        let input = makeAudioWriterInput()
+        guard writer.canAdd(input) else {
+            throw RecorderError.writerInputRejected
+        }
+        writer.add(input)
+
+        guard writer.startWriting() else {
+            throw writer.error ?? RecorderError.writerInputRejected
+        }
+
+        let startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        writer.startSession(atSourceTime: startTime)
+        self.microphoneWriter = writer
+        self.microphoneWriterInput = input
+    }
+
+    private func appendToSystemWriter(_ sampleBuffer: CMSampleBuffer) {
+        guard let systemWriterInput else {
+            return
+        }
+        if systemWriterInput.isReadyForMoreMediaData {
+            if !systemWriterInput.append(sampleBuffer) {
+                let details = systemWriter?.error.map { "\($0)" } ?? "unknown append failure"
+                fputs("sck_error=Failed to append system audio sample: \(details)\n", stderr)
+                fflush(stderr)
+                requestStop()
+            }
+        }
+    }
+
+    private func appendToMicrophoneWriter(_ sampleBuffer: CMSampleBuffer) {
+        guard let microphoneWriterInput else {
+            return
+        }
+        if microphoneWriterInput.isReadyForMoreMediaData {
+            if !microphoneWriterInput.append(sampleBuffer) {
+                let details = microphoneWriter?.error.map { "\($0)" } ?? "unknown append failure"
+                fputs("sck_error=Failed to append microphone sample: \(details)\n", stderr)
+                fflush(stderr)
+                requestStop()
+            }
+        }
     }
 
     private func monitorStdinForStopSignal() {
@@ -176,13 +268,20 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
     }
 
     private func finalizeWriter() async {
-        guard let writer, let writerInput else {
-            return
+        if let systemWriter, let systemWriterInput {
+            systemWriterInput.markAsFinished()
+            await withCheckedContinuation { continuation in
+                systemWriter.finishWriting {
+                    continuation.resume()
+                }
+            }
         }
-        writerInput.markAsFinished()
-        await withCheckedContinuation { continuation in
-            writer.finishWriting {
-                continuation.resume()
+        if let microphoneWriter, let microphoneWriterInput {
+            microphoneWriterInput.markAsFinished()
+            await withCheckedContinuation { continuation in
+                microphoneWriter.finishWriting {
+                    continuation.resume()
+                }
             }
         }
     }
@@ -194,9 +293,13 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         }
         lastTelemetry = now
 
-        if !hasReceivedAudioSample && !emittedNoSampleError && now.timeIntervalSince(startedAt) > 2.5 {
-            emittedNoSampleError = true
+        if !hasReceivedSystemSample && !emittedNoSystemSampleError && now.timeIntervalSince(startedAt) > 2.5 {
+            emittedNoSystemSampleError = true
             fputs("sck_error=No audio samples received from ScreenCaptureKit. Check Screen & System Audio Recording permission and make sure app/call audio is actively playing.\n", stderr)
+        }
+        if capturesMicrophone && !hasReceivedMicrophoneSample && !emittedNoMicrophoneSampleError && now.timeIntervalSince(startedAt) > 2.5 {
+            emittedNoMicrophoneSampleError = true
+            fputs("sck_error=No microphone samples received from ScreenCaptureKit. Check microphone permission and input device.\n", stderr)
         }
 
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?
@@ -205,6 +308,11 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         fputs("total_size=\(fileSize)\n", stderr)
         fputs("out_time_us=\(micros)\n", stderr)
         fputs("level=\(smoothedLevel)\n", stderr)
+        if let microphoneOutputURL {
+            let micFileSize = (try? FileManager.default.attributesOfItem(atPath: microphoneOutputURL.path)[.size] as? NSNumber)?
+                .uint64Value ?? 0
+            fputs("microphone_total_size=\(micFileSize)\n", stderr)
+        }
         fflush(stderr)
     }
 
@@ -285,6 +393,26 @@ private func parseOutputPath() throws -> String {
     return args[index + 1]
 }
 
+private func parseMicrophoneOutputPath() -> String? {
+    let args = CommandLine.arguments
+    guard let index = args.firstIndex(of: "--microphone-output"), args.count > index + 1 else {
+        return nil
+    }
+    return args[index + 1]
+}
+
+private func parseMicrophoneDeviceID() -> String? {
+    let args = CommandLine.arguments
+    guard let index = args.firstIndex(of: "--microphone-device-id"), args.count > index + 1 else {
+        return nil
+    }
+    return args[index + 1]
+}
+
+private func parseCapturesMicrophone() -> Bool {
+    CommandLine.arguments.contains("--with-microphone")
+}
+
 extension Comparable {
     fileprivate func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
@@ -296,7 +424,16 @@ struct Main {
     static func main() async {
         do {
             let outputPath = try parseOutputPath()
-            let recorder = SystemAudioRecorder(outputURL: URL(fileURLWithPath: outputPath))
+            let capturesMicrophone = parseCapturesMicrophone()
+            let microphonePath = parseMicrophoneOutputPath()
+            if capturesMicrophone && microphonePath == nil {
+                throw RecorderError.invalidMicrophoneArguments
+            }
+            let recorder = SystemAudioRecorder(
+                outputURL: URL(fileURLWithPath: outputPath),
+                microphoneOutputURL: microphonePath.map { URL(fileURLWithPath: $0) },
+                microphoneDeviceID: parseMicrophoneDeviceID()
+            )
             try await recorder.run()
         } catch {
             fputs("sck_error=\(error)\n", stderr)

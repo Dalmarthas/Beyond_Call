@@ -66,6 +66,7 @@ export interface BootstrapState {
   entries: Entry[];
   prompt_templates: PromptTemplate[];
   model_name: string;
+  whisper_model: string;
 }
 
 export interface EntryBundle {

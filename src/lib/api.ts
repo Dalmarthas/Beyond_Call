@@ -47,6 +47,9 @@ export const api = {
     invoke<void>("update_prompt_template", { role, promptText }),
   updateModelName: (modelName: string) =>
     invoke<void>("update_model_name", { modelName }),
+  listWhisperModels: () => invoke<string[]>("list_whisper_models"),
+  updateWhisperModel: (modelName: string) =>
+    invoke<void>("update_whisper_model", { modelName }),
   listRecordingDevices: () => invoke<RecordingDevice[]>("list_recording_devices"),
   listAudioDeviceHints: () => invoke<string[]>("list_audio_device_hints"),
   exportEntry: (entryId: string) =>

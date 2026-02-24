@@ -3,7 +3,7 @@ use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -17,6 +17,22 @@ use zip::write::FileOptions;
 
 const MODEL_NAME_KEY: &str = "model_name";
 const DEFAULT_MODEL_NAME: &str = "qwen3:8b";
+const WHISPER_MODEL_KEY: &str = "whisper_model";
+const DEFAULT_WHISPER_MODEL: &str = "turbo";
+const OPENAI_WHISPER_MODELS: &[&str] = &[
+    "tiny",
+    "tiny.en",
+    "base",
+    "base.en",
+    "small",
+    "small.en",
+    "medium",
+    "medium.en",
+    "large",
+    "large-v2",
+    "large-v3",
+    "turbo",
+];
 #[cfg(target_os = "macos")]
 const SCK_RECORDER_SWIFT: &str = include_str!("../macos/screen_capture_audio.swift");
 
@@ -29,6 +45,7 @@ struct AppState {
 struct RecordingSession {
     entry_id: String,
     output_path: PathBuf,
+    native_microphone_path: Option<PathBuf>,
     existing_path: Option<PathBuf>,
     child: Child,
     telemetry: Arc<Mutex<RecordingTelemetry>>,
@@ -102,6 +119,7 @@ struct BootstrapState {
     entries: Vec<Entry>,
     prompt_templates: Vec<PromptTemplate>,
     model_name: String,
+    whisper_model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +287,12 @@ fn seed_defaults(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| format!("Failed to seed settings: {e}"))?;
 
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES(?1, ?2, ?3)",
+        params![WHISPER_MODEL_KEY, DEFAULT_WHISPER_MODEL, now],
+    )
+    .map_err(|e| format!("Failed to seed whisper model setting: {e}"))?;
+
     Ok(())
 }
 
@@ -378,13 +402,21 @@ fn validate_prompt_role(role: &str) -> Result<(), String> {
     validate_artifact_type(role)
 }
 
-fn model_name(conn: &Connection) -> Result<String, String> {
+fn setting_value(conn: &Connection, key: &str, fallback: &str) -> Result<String, String> {
     let mut stmt = conn
         .prepare("SELECT value FROM settings WHERE key = ?1")
-        .map_err(|e| format!("Failed to prepare model name query: {e}"))?;
+        .map_err(|e| format!("Failed to prepare settings query: {e}"))?;
 
-    let result: Result<String, _> = stmt.query_row(params![MODEL_NAME_KEY], |row| row.get(0));
-    Ok(result.unwrap_or_else(|_| DEFAULT_MODEL_NAME.to_string()))
+    let result: Result<String, _> = stmt.query_row(params![key], |row| row.get(0));
+    Ok(result.unwrap_or_else(|_| fallback.to_string()))
+}
+
+fn model_name(conn: &Connection) -> Result<String, String> {
+    setting_value(conn, MODEL_NAME_KEY, DEFAULT_MODEL_NAME)
+}
+
+fn whisper_model_name(conn: &Connection) -> Result<String, String> {
+    setting_value(conn, WHISPER_MODEL_KEY, DEFAULT_WHISPER_MODEL)
 }
 
 fn prompt_for_role(conn: &Connection, role: &str) -> Result<String, String> {
@@ -528,6 +560,16 @@ fn supports_native_system_audio_capture() -> bool {
     macos_version_major().map(|major| major >= 13).unwrap_or(false)
 }
 
+#[cfg(target_os = "macos")]
+fn supports_native_system_audio_plus_microphone() -> bool {
+    macos_version_major().map(|major| major >= 15).unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn supports_native_system_audio_plus_microphone() -> bool {
+    false
+}
+
 #[cfg(not(target_os = "macos"))]
 fn supports_native_system_audio_capture() -> bool {
     false
@@ -540,21 +582,17 @@ fn ensure_sck_recorder_binary(base_data_dir: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("Failed to create helper directory {}: {e}", bin_dir.display()))?;
 
     let source_path = bin_dir.join("screen_capture_audio.swift");
-    fs::write(&source_path, SCK_RECORDER_SWIFT)
-        .map_err(|e| format!("Failed to write ScreenCaptureKit helper source: {e}"))?;
+    let source_changed = match fs::read_to_string(&source_path) {
+        Ok(existing) => existing != SCK_RECORDER_SWIFT,
+        Err(_) => true,
+    };
+    if source_changed {
+        fs::write(&source_path, SCK_RECORDER_SWIFT)
+            .map_err(|e| format!("Failed to write ScreenCaptureKit helper source: {e}"))?;
+    }
 
     let binary_path = bin_dir.join("screen_capture_audio");
-    let should_compile = if !binary_path.exists() {
-        true
-    } else {
-        let source_mtime = fs::metadata(&source_path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let binary_mtime = fs::metadata(&binary_path)
-            .and_then(|meta| meta.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        source_mtime > binary_mtime
-    };
+    let should_compile = source_changed || !binary_path.exists();
 
     if should_compile {
         let output = Command::new("xcrun")
@@ -575,6 +613,21 @@ fn ensure_sck_recorder_binary(base_data_dir: &Path) -> Result<PathBuf, String> {
     }
 
     Ok(binary_path)
+}
+
+fn native_system_recording_device() -> Option<RecordingDevice> {
+    #[cfg(target_os = "macos")]
+    {
+        if supports_native_system_audio_capture() {
+            return Some(RecordingDevice {
+                name: "System Audio (macOS Native)".to_string(),
+                format: "screencapturekit".to_string(),
+                input: "system".to_string(),
+                is_loopback: true,
+            });
+        }
+    }
+    None
 }
 
 fn spawn_recording_telemetry(stderr: impl std::io::Read + Send + 'static, telemetry: Arc<Mutex<RecordingTelemetry>>) {
@@ -676,6 +729,33 @@ fn concat_recordings(first: &Path, second: &Path, output: &Path) -> Result<(), S
     Ok(())
 }
 
+fn mix_audio_tracks(first: &Path, second: &Path, output: &Path) -> Result<(), String> {
+    let out = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i")
+        .arg(first)
+        .arg("-i")
+        .arg(second)
+        .arg("-filter_complex")
+        .arg("[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=2[a]")
+        .arg("-map")
+        .arg("[a]")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg(output)
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg audio mix: {e}"))?;
+
+    if !out.status.success() {
+        let stderr_text = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("Failed to mix system + microphone audio: {stderr_text}"));
+    }
+
+    Ok(())
+}
+
 fn set_process_paused(pid: u32, paused: bool) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -700,8 +780,9 @@ fn set_process_paused(pid: u32, paused: bool) -> Result<(), String> {
     }
 }
 
-fn resolve_whisper_model_path(base_data_dir: &Path) -> Result<PathBuf, String> {
+fn resolve_whisper_model_path(base_data_dir: &Path, preferred_model: Option<&str>) -> Result<PathBuf, String> {
     let min_model_bytes = 10 * 1024 * 1024_u64;
+    let cwd = std::env::current_dir().ok();
 
     let validate_model = |path: &Path| -> Result<bool, String> {
         if !path.exists() {
@@ -719,6 +800,24 @@ fn resolve_whisper_model_path(base_data_dir: &Path) -> Result<PathBuf, String> {
         Ok(true)
     };
 
+    let add_named_candidate = |candidates: &mut Vec<PathBuf>, model_name: &str| {
+        let trimmed = model_name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let direct = PathBuf::from(trimmed);
+        if direct.is_absolute() || trimmed.contains('/') {
+            candidates.push(direct);
+            return;
+        }
+
+        candidates.push(base_data_dir.join("models").join(trimmed));
+        if let Some(cwd) = &cwd {
+            candidates.push(cwd.join("models").join(trimmed));
+            candidates.push(cwd.join("..").join("models").join(trimmed));
+        }
+    };
+
     if let Ok(explicit) = std::env::var("WHISPER_MODEL_PATH") {
         let candidate = PathBuf::from(explicit);
         if validate_model(&candidate)? {
@@ -727,22 +826,14 @@ fn resolve_whisper_model_path(base_data_dir: &Path) -> Result<PathBuf, String> {
     }
 
     let mut candidates: Vec<PathBuf> = Vec::new();
-    // Prefer multilingual models for language auto-detection.
-    candidates.push(base_data_dir.join("models").join("ggml-base.bin"));
-    candidates.push(base_data_dir.join("models").join("ggml-tiny.bin"));
-    candidates.push(base_data_dir.join("models").join("ggml-base.en.bin"));
-    candidates.push(base_data_dir.join("models").join("ggml-tiny.en.bin"));
-
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("models").join("ggml-base.bin"));
-        candidates.push(cwd.join("models").join("ggml-tiny.bin"));
-        candidates.push(cwd.join("models").join("ggml-base.en.bin"));
-        candidates.push(cwd.join("models").join("ggml-tiny.en.bin"));
-        candidates.push(cwd.join("..").join("models").join("ggml-base.bin"));
-        candidates.push(cwd.join("..").join("models").join("ggml-tiny.bin"));
-        candidates.push(cwd.join("..").join("models").join("ggml-base.en.bin"));
-        candidates.push(cwd.join("..").join("models").join("ggml-tiny.en.bin"));
+    if let Some(model_name) = preferred_model {
+        add_named_candidate(&mut candidates, model_name);
     }
+    // Prefer multilingual models for language auto-detection.
+    add_named_candidate(&mut candidates, "ggml-base.bin");
+    add_named_candidate(&mut candidates, "ggml-tiny.bin");
+    add_named_candidate(&mut candidates, "ggml-base.en.bin");
+    add_named_candidate(&mut candidates, "ggml-tiny.en.bin");
 
     for candidate in candidates {
         if validate_model(&candidate)? {
@@ -753,6 +844,18 @@ fn resolve_whisper_model_path(base_data_dir: &Path) -> Result<PathBuf, String> {
     Err(
         "No valid whisper model found. Set WHISPER_MODEL_PATH or place ggml-base.bin / ggml-tiny.bin (or *.en variants) in ./models/ (install via `bash scripts/macos/install-whisper-model.sh`).".to_string(),
     )
+}
+
+fn whisper_model_looks_like_cpp(model_name: &str) -> bool {
+    let trimmed = model_name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.ends_with(".bin")
+        || lower.starts_with("ggml-")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
 }
 
 fn parse_whisper_detected_language(stderr_text: &str) -> Option<String> {
@@ -768,6 +871,26 @@ fn parse_whisper_detected_language(stderr_text: &str) -> Option<String> {
             .take_while(|ch| ch.is_ascii_alphabetic() || *ch == '-')
             .collect();
         if (2..=8).contains(&lang.len()) {
+            return Some(lang);
+        }
+    }
+    None
+}
+
+fn parse_openai_whisper_detected_language(output_text: &str) -> Option<String> {
+    let marker = "Detected language:";
+    for line in output_text.lines() {
+        let Some(pos) = line.find(marker) else {
+            continue;
+        };
+        let suffix = line[(pos + marker.len())..].trim();
+        let lang = suffix
+            .split(|ch: char| ch == ',' || ch == '(' || ch == '[' || ch.is_whitespace())
+            .next()
+            .unwrap_or("")
+            .trim_matches(|ch: char| !ch.is_ascii_alphabetic() && ch != '-')
+            .to_ascii_lowercase();
+        if (2..=16).contains(&lang.len()) {
             return Some(lang);
         }
     }
@@ -924,6 +1047,9 @@ fn rms_db_to_level(db: f32) -> f32 {
 #[tauri::command]
 fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
     if !find_executable("ffmpeg") {
+        if let Some(native) = native_system_recording_device() {
+            return Ok(vec![native]);
+        }
         return Err("ffmpeg not found in PATH".to_string());
     }
 
@@ -967,16 +1093,8 @@ fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
         Vec::new()
     };
 
-    if cfg!(target_os = "macos") && supports_native_system_audio_capture() {
-        devices.insert(
-            0,
-            RecordingDevice {
-                name: "System Audio (macOS Native)".to_string(),
-                format: "screencapturekit".to_string(),
-                input: "system".to_string(),
-                is_loopback: true,
-            },
-        );
+    if let Some(native) = native_system_recording_device() {
+        devices.insert(0, native);
     }
 
     if devices.is_empty() && cfg!(target_os = "macos") {
@@ -994,7 +1112,15 @@ fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
 #[tauri::command]
 fn list_audio_device_hints() -> Result<Vec<String>, String> {
     if !find_executable("ffmpeg") {
-        return Err("ffmpeg not found in PATH".to_string());
+        let mut hints = Vec::new();
+        if native_system_recording_device().is_some() {
+            hints.push(
+                "Native system source available: select \"System Audio (macOS Native)\" for ScreenCaptureKit-based capture."
+                    .to_string(),
+            );
+        }
+        hints.push("ffmpeg not found in PATH".to_string());
+        return Ok(hints);
     }
 
     let output = if cfg!(target_os = "macos") {
@@ -1052,7 +1178,7 @@ fn list_audio_device_hints() -> Result<Vec<String>, String> {
         hints.push("No parsed devices found. Run `ffmpeg` device list manually for this platform.".to_string());
     }
 
-    if cfg!(target_os = "macos") && supports_native_system_audio_capture() {
+    if native_system_recording_device().is_some() {
         hints.insert(
             0,
             "Native system source available: select \"System Audio (macOS Native)\" for ScreenCaptureKit-based capture."
@@ -1164,6 +1290,7 @@ fn bootstrap_state(state: State<'_, AppState>) -> Result<BootstrapState, String>
         entries,
         prompt_templates: prompts,
         model_name: model_name(&conn)?,
+        whisper_model: whisper_model_name(&conn)?,
     })
 }
 
@@ -1436,6 +1563,11 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
     let has_native_system_source = sources
         .iter()
         .any(|source| source.format.eq_ignore_ascii_case("screencapturekit"));
+    let non_native_source_count = sources
+        .iter()
+        .filter(|source| !source.format.eq_ignore_ascii_case("screencapturekit"))
+        .count();
+    let native_with_microphone = has_native_system_source && non_native_source_count > 0;
     if has_native_system_source && !cfg!(target_os = "macos") {
         return Err("Native system-audio source is currently available only on macOS".to_string());
     }
@@ -1445,15 +1577,17 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
                 .to_string(),
         );
     }
-    if has_native_system_source && sources.len() > 1 {
+    if native_with_microphone && !supports_native_system_audio_plus_microphone() {
         return Err(
-            "System Audio (macOS Native) currently records as a dedicated source. Remove other sources and retry."
+            "Native system + microphone capture requires macOS 15 or newer. On older versions, use loopback + microphone sources."
                 .to_string(),
         );
     }
-
-    if !has_native_system_source && !find_executable("ffmpeg") {
-        return Err("ffmpeg not found in PATH. Install ffmpeg to enable recording.".to_string());
+    if has_native_system_source && non_native_source_count > 1 {
+        return Err(
+            "With System Audio (macOS Native), select at most one additional microphone source."
+                .to_string(),
+        );
     }
 
     let db = db_path(&state)?;
@@ -1478,12 +1612,33 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
             }
         });
 
+    // ffmpeg is required for the non-native capture path, for native append concatenation,
+    // and for native system+microphone final mixing.
+    let requires_ffmpeg = !has_native_system_source || existing_path.is_some() || native_with_microphone;
+    if requires_ffmpeg && !find_executable("ffmpeg") {
+        return Err("ffmpeg not found in PATH. Install ffmpeg to enable this recording mode.".to_string());
+    }
+
+    let segment_stamp = unix_now();
     let output_path = if existing_path.is_some() {
         entry_directory
             .join("audio")
-            .join(format!("segment-{}.wav", unix_now()))
+            .join(format!("segment-{segment_stamp}.wav"))
     } else {
         entry_directory.join("audio").join("original.wav")
+    };
+    let native_microphone_path = if native_with_microphone {
+        if existing_path.is_some() {
+            Some(
+                entry_directory
+                    .join("audio")
+                    .join(format!("segment-{segment_stamp}-microphone.wav")),
+            )
+        } else {
+            Some(entry_directory.join("audio").join("original-microphone.wav"))
+        }
+    } else {
+        None
     };
 
     let mut child = if has_native_system_source {
@@ -1493,6 +1648,11 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
             let mut command = Command::new(helper_binary);
             command.arg("--output");
             command.arg(output_path.to_string_lossy().to_string());
+            if let Some(path) = &native_microphone_path {
+                command.arg("--with-microphone");
+                command.arg("--microphone-output");
+                command.arg(path.to_string_lossy().to_string());
+            }
             command.stdin(Stdio::piped());
             command.stdout(Stdio::null());
             command.stderr(Stdio::piped());
@@ -1592,6 +1752,7 @@ Check recording source format/input values and macOS microphone permissions."
         RecordingSession {
             entry_id,
             output_path,
+            native_microphone_path,
             existing_path,
             child,
             telemetry,
@@ -1608,11 +1769,6 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
     let mut session = sessions
         .remove(&session_id)
         .ok_or_else(|| "Recording session not found".to_string())?;
-    let recorder_error = session
-        .telemetry
-        .lock()
-        .ok()
-        .and_then(|state| state.last_error.clone());
 
     if session.paused {
         let pid = session.child.id();
@@ -1625,25 +1781,47 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
     }
 
     wait_for_recorder_shutdown(&mut session.child);
+    let recorder_error = session
+        .telemetry
+        .lock()
+        .ok()
+        .and_then(|state| state.last_error.clone());
 
     let db = db_path(&state)?;
     let conn = connection(&db)?;
+    let run_output_path = session.output_path.clone();
+
+    if let Some(mic_path) = &session.native_microphone_path {
+        if run_output_path.exists() && mic_path.exists() {
+            let mixed_path = run_output_path
+                .parent()
+                .unwrap_or(run_output_path.as_path())
+                .join(format!("mixed-{}.wav", unix_now()));
+            mix_audio_tracks(&run_output_path, mic_path, &mixed_path)?;
+            let _ = fs::remove_file(&run_output_path);
+            fs::rename(&mixed_path, &run_output_path)
+                .map_err(|e| format!("Failed to finalize mixed native recording: {e}"))?;
+            let _ = fs::remove_file(mic_path);
+        } else if mic_path.exists() && !run_output_path.exists() {
+            return Err("Microphone stream recorded but system stream is missing. Retry recording and ensure system audio is actively playing.".to_string());
+        }
+    }
 
     let final_path = if let Some(existing) = &session.existing_path {
-        if session.output_path.exists() {
+        if run_output_path.exists() {
             if existing.exists() {
                 let merged = existing
                     .parent()
                     .unwrap_or(existing.as_path())
                     .join(format!("merged-{}.wav", unix_now()));
-                concat_recordings(existing, &session.output_path, &merged)?;
+                concat_recordings(existing, &run_output_path, &merged)?;
                 let _ = fs::remove_file(existing);
                 fs::rename(&merged, existing)
                     .map_err(|e| format!("Failed to finalize merged recording: {e}"))?;
-                let _ = fs::remove_file(&session.output_path);
+                let _ = fs::remove_file(&run_output_path);
                 existing.clone()
             } else {
-                session.output_path.clone()
+                run_output_path.clone()
             }
         } else if existing.exists() {
             // No new segment was produced; preserve previously recorded audio.
@@ -1655,8 +1833,8 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
             return Err("Recording file was not created. Ensure system/audio permissions are granted and that audio is actively playing during capture.".to_string());
         }
     } else {
-        if session.output_path.exists() {
-            session.output_path.clone()
+        if run_output_path.exists() {
+            run_output_path.clone()
         } else {
             if let Some(details) = recorder_error {
                 return Err(format!("Recording file was not created. Native recorder error: {details}"));
@@ -1727,23 +1905,34 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
     let entry_directory = ensure_entry_dirs(&base_data_dir, &entry_id)?;
     let transcript_dir = entry_directory.join("transcript");
     let output_base = transcript_dir.join(format!("tmp_{}", unix_now()));
+    let preferred_model = whisper_model_name(&conn)?;
+    let use_whisper_cpp = whisper_model_looks_like_cpp(&preferred_model);
+    let language_requested = language
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "auto".to_string());
 
-    let whisper_bin = if find_executable("whisper-cli") {
-        "whisper-cli"
-    } else if find_executable("whisper") {
-        "whisper"
+    let mut command = if use_whisper_cpp {
+        if !find_executable("whisper-cli") {
+            return Err(
+                "Selected Whisper model is a whisper.cpp model (*.bin), but `whisper-cli` is not available in PATH."
+                    .to_string(),
+            );
+        }
+        Command::new("whisper-cli")
     } else {
-        return Err("No Whisper executable found (`whisper-cli` or `whisper`) in PATH".to_string());
+        if !find_executable("whisper") {
+            return Err(
+                "Selected Whisper model requires OpenAI Whisper CLI (`whisper`). Install it (for example `pipx install openai-whisper`) and try again."
+                    .to_string(),
+            );
+        }
+        Command::new("whisper")
     };
 
-    let mut command = Command::new(whisper_bin);
-    if whisper_bin == "whisper-cli" {
-        let model_path = resolve_whisper_model_path(&base_data_dir)?;
-        let language_requested = language
-            .as_ref()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "auto".to_string());
+    if use_whisper_cpp {
+        let model_path = resolve_whisper_model_path(&base_data_dir, Some(&preferred_model))?;
         let english_only_model = model_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -1761,41 +1950,53 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
         command.arg("-f").arg(&recording_path);
         command.arg("-otxt");
         command.arg("-of").arg(output_base.to_string_lossy().to_string());
-        command.arg("--language").arg(language_requested);
+        command.arg("--language").arg(&language_requested);
     } else {
         command.arg(&recording_path);
+        command.arg("--model").arg(preferred_model.trim());
+        command.arg("--task").arg("transcribe");
         command.arg("--output_format").arg("txt");
         command.arg("--output_dir").arg(transcript_dir.to_string_lossy().to_string());
-        let lang_value = language
-            .as_ref()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "auto".to_string());
-        command.arg("--language").arg(lang_value);
+        if !language_requested.eq_ignore_ascii_case("auto") {
+            command.arg("--language").arg(&language_requested);
+        }
     }
 
     let output = command
         .output()
         .map_err(|e| format!("Failed to run Whisper command: {e}"))?;
     let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
 
     if !output.status.success() {
         return Err(format!("Whisper transcription failed: {stderr_text}"));
     }
 
-    let transcript_path = if whisper_bin == "whisper-cli" {
+    let transcript_path = if use_whisper_cpp {
         output_base.with_extension("txt")
     } else {
-        let mut candidate = None;
-        if let Ok(read_dir) = fs::read_dir(&transcript_dir) {
-            for item in read_dir.flatten() {
-                let path = item.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
-                    candidate = Some(path);
+        let expected = transcript_dir.join(
+            Path::new(&recording_path)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("recording")
+                .to_string()
+                + ".txt",
+        );
+        if expected.exists() {
+            expected
+        } else {
+            let mut candidate = None;
+            if let Ok(read_dir) = fs::read_dir(&transcript_dir) {
+                for item in read_dir.flatten() {
+                    let path = item.path();
+                    if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
+                        candidate = Some(path);
+                    }
                 }
             }
+            candidate.ok_or_else(|| "Whisper did not produce a transcript file".to_string())?
         }
-        candidate.ok_or_else(|| "Whisper did not produce a transcript file".to_string())?
     };
 
     let transcript_text = fs::read_to_string(&transcript_path)
@@ -1810,7 +2011,10 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
     let version = get_next_transcript_version(&conn, &entry_id)?;
     let mut language_value = language.unwrap_or_else(|| "auto".to_string());
     if language_value.eq_ignore_ascii_case("auto") {
-        if let Some(detected) = parse_whisper_detected_language(&stderr_text) {
+        if let Some(detected) = parse_whisper_detected_language(&stderr_text)
+            .or_else(|| parse_openai_whisper_detected_language(&stderr_text))
+            .or_else(|| parse_openai_whisper_detected_language(&stdout_text))
+        {
             language_value = detected;
         }
     }
@@ -1983,6 +2187,65 @@ fn update_model_name(model_name: String, state: State<'_, AppState>) -> Result<(
 }
 
 #[tauri::command]
+fn list_whisper_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let mut models = BTreeSet::new();
+    for model in OPENAI_WHISPER_MODELS {
+        models.insert((*model).to_string());
+    }
+    let base_data_dir = data_dir(&state)?;
+    let mut roots = vec![base_data_dir.join("models")];
+
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join("models"));
+        roots.push(cwd.join("..").join("models"));
+    }
+
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        let Ok(read_dir) = fs::read_dir(&root) else {
+            continue;
+        };
+        for item in read_dir.flatten() {
+            let path = item.path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !file_name.starts_with("ggml-") || !file_name.ends_with(".bin") {
+                continue;
+            }
+            models.insert(file_name.to_string());
+        }
+    }
+
+    if models.is_empty() {
+        models.insert(DEFAULT_WHISPER_MODEL.to_string());
+    }
+    Ok(models.into_iter().collect())
+}
+
+#[tauri::command]
+fn update_whisper_model(model_name: String, state: State<'_, AppState>) -> Result<(), String> {
+    let trimmed = model_name.trim();
+    if trimmed.is_empty() {
+        return Err("Whisper model name cannot be empty".to_string());
+    }
+
+    let db = db_path(&state)?;
+    let conn = connection(&db)?;
+
+    conn.execute(
+        "INSERT INTO settings(key, value, updated_at) VALUES(?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![WHISPER_MODEL_KEY, trimmed, now_ts()],
+    )
+    .map_err(|e| format!("Failed to update whisper model: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
 fn export_entry_markdown(entry_id: String, state: State<'_, AppState>) -> Result<String, String> {
     let db = db_path(&state)?;
     let conn = connection(&db)?;
@@ -2141,6 +2404,8 @@ pub fn run() {
             update_artifact,
             update_prompt_template,
             update_model_name,
+            list_whisper_models,
+            update_whisper_model,
             export_entry_markdown
         ])
         .run(tauri::generate_context!())

@@ -37,6 +37,25 @@ const TRANSCRIPTION_LANGUAGES: { value: string; label: string }[] = [
   { value: "fr", label: "French" }
 ];
 
+const WHISPER_MODEL_PRESETS: string[] = [
+  "turbo",
+  "large-v3",
+  "large-v2",
+  "large",
+  "medium",
+  "medium.en",
+  "small",
+  "small.en",
+  "base",
+  "base.en",
+  "tiny",
+  "tiny.en",
+  "ggml-base.bin",
+  "ggml-tiny.bin",
+  "ggml-base.en.bin",
+  "ggml-tiny.en.bin"
+];
+
 function latestByType(revisions: ArtifactRevision[], type: ArtifactType) {
   return revisions
     .filter((item) => item.artifact_type === type)
@@ -69,9 +88,7 @@ export default function App() {
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [entryBundle, setEntryBundle] = useState<EntryBundle | null>(null);
   const [recordingSessionId, setRecordingSessionId] = useState<string | null>(null);
-  const [sources, setSources] = useState<RecordingSource[]>([
-    { label: "Microphone", format: "avfoundation", input: ":0" }
-  ]);
+  const [sources, setSources] = useState<RecordingSource[]>([]);
   const [transcriptDraft, setTranscriptDraft] = useState<string>("");
   const [recordingDevices, setRecordingDevices] = useState<RecordingDevice[]>([]);
   const [artifactDrafts, setArtifactDrafts] = useState<Record<ArtifactType, string>>({
@@ -89,6 +106,8 @@ export default function App() {
     critique_cs: ""
   });
   const [modelName, setModelName] = useState<string>("qwen3:8b");
+  const [whisperModel, setWhisperModel] = useState<string>("turbo");
+  const [whisperModelOptions, setWhisperModelOptions] = useState<string[]>(WHISPER_MODEL_PRESETS);
   const [newRootFolderName, setNewRootFolderName] = useState("");
   const [newSubfolderName, setNewSubfolderName] = useState("");
   const [newEntryTitle, setNewEntryTitle] = useState("");
@@ -143,11 +162,32 @@ export default function App() {
     () => sources.some((source) => source.format === "screencapturekit"),
     [sources]
   );
+  const whisperModelChoices = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [...WHISPER_MODEL_PRESETS, ...whisperModelOptions, whisperModel].filter(
+            (value) => value.trim().length > 0
+          )
+        )
+      ),
+    [whisperModel, whisperModelOptions]
+  );
 
   async function reloadBootstrap(keepSelection = true) {
     const data = await api.bootstrapState();
     setBootstrap(data);
     setModelName(data.model_name);
+    setWhisperModel(data.whisper_model);
+    try {
+      const models = await api.listWhisperModels();
+      const merged = Array.from(new Set([data.whisper_model, ...models]));
+      setWhisperModelOptions(merged);
+    } catch {
+      setWhisperModelOptions((current) =>
+        current.includes(data.whisper_model) ? current : [data.whisper_model, ...current]
+      );
+    }
     const nextPrompts = { ...promptDrafts };
     for (const template of data.prompt_templates) {
       nextPrompts[template.role] = template.prompt_text;
@@ -242,7 +282,7 @@ export default function App() {
       setError(null);
       try {
         await reloadBootstrap(false);
-        await loadRecordingDevices();
+        await loadRecordingDevices(true);
       } catch (taskError) {
         const message = taskError instanceof Error ? taskError.message : String(taskError);
         setError(message);
@@ -375,17 +415,45 @@ export default function App() {
     };
   }
 
-  async function loadRecordingDevices() {
+  function defaultSourcesFromDevices(devices: RecordingDevice[]): RecordingSource[] {
+    const nativeSystem = devices.find(
+      (device) => device.format === "screencapturekit" && device.input === "system"
+    );
+    const preferredMicLike =
+      devices.find(
+        (device) =>
+          !device.is_loopback && !(device.format === "screencapturekit" && device.input === "system")
+      ) ??
+      devices.find((device) => !device.is_loopback) ??
+      devices[0];
+
+    if (nativeSystem && preferredMicLike && deviceKey(nativeSystem) !== deviceKey(preferredMicLike)) {
+      return [sourceFromDevice(nativeSystem), sourceFromDevice(preferredMicLike)];
+    }
+    if (nativeSystem) {
+      return [sourceFromDevice(nativeSystem)];
+    }
+    if (preferredMicLike) {
+      return [sourceFromDevice(preferredMicLike)];
+    }
+    return [];
+  }
+
+  async function loadRecordingDevices(applyStartupDefaults = false) {
     const devices = await api.listRecordingDevices();
     setRecordingDevices(devices);
     if (devices.length === 0) {
       return;
     }
+    const startupDefaults = defaultSourcesFromDevices(devices);
     const preferredMicLike = devices.find((device) => !device.is_loopback) ?? devices[0];
 
     setSources((current) => {
+      if (applyStartupDefaults && startupDefaults.length > 0) {
+        return startupDefaults;
+      }
       if (current.length === 0) {
-        return [sourceFromDevice(preferredMicLike)];
+        return startupDefaults.length > 0 ? startupDefaults : [sourceFromDevice(preferredMicLike)];
       }
 
       return current.map((source, index) => {
@@ -589,6 +657,10 @@ export default function App() {
                 fallback options.
               </p>
               <p className="help-text">
+                On macOS 15+, choose "System Audio (macOS Native)" plus one microphone source to
+                capture both system audio and microphone in the same recording.
+              </p>
+              <p className="help-text">
                 macOS loopback setup: 1) Open Audio MIDI Setup. 2) Create a Multi-Output Device
                 with your speakers + BlackHole 2ch. 3) Set your call app output to that
                 Multi-Output device. 4) Keep microphone as a separate source in this app.
@@ -675,6 +747,11 @@ export default function App() {
               >
                 + Add Source
               </button>
+              {selectedNativeSystemSource && sources.length > 2 && (
+                <p className="help-text">
+                  With "System Audio (macOS Native)", use at most one additional microphone source.
+                </p>
+              )}
 
               <div className="action-row">
                 {!recordingSessionId ? (
@@ -946,6 +1023,53 @@ export default function App() {
         >
           Save Model
         </button>
+        <label>
+          Whisper Model
+          <select
+            value={whisperModel}
+            onChange={(event) => setWhisperModel(event.target.value)}
+          >
+            {whisperModelChoices.map((model) => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Custom Whisper Model (optional)
+          <input
+            value={whisperModel}
+            onChange={(event) => setWhisperModel(event.target.value)}
+            placeholder="turbo | large-v3 | ggml-base.bin | /path/to/model.bin"
+          />
+        </label>
+        <div className="action-row">
+          <button
+            disabled={busy}
+            onClick={() =>
+              runTask(async () => api.updateWhisperModel(whisperModel), "Whisper model updated")
+            }
+          >
+            Save Whisper Model
+          </button>
+          <button
+            disabled={busy}
+            onClick={() =>
+              runTask(async () => {
+                const models = await api.listWhisperModels();
+                setWhisperModelOptions(Array.from(new Set([whisperModel, ...models])));
+              }, "Whisper models refreshed")
+            }
+          >
+            Refresh Whisper Models
+          </button>
+        </div>
+        <p className="help-text">
+          Use <code>turbo</code>/<code>large-v3</code> with OpenAI Whisper CLI (<code>whisper</code>), or
+          use local <code>ggml-*.bin</code> models with <code>whisper-cli</code>. OpenAI models download
+          on first run.
+        </p>
 
         {CRITIQUE_ROLES.map((item) => (
           <div key={item.role} className="artifact-block">
