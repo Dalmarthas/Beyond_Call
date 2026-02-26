@@ -40,16 +40,14 @@ textarea {
 .app-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
 }
 
 .header-title-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  gap: 12px;
+  gap: 10px;
 }
 
 .app-header h1 {
@@ -62,6 +60,10 @@ textarea {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.panel-name-input {
+  margin-bottom: 8px;
 }
 
 .layout-grid {

@@ -18,6 +18,10 @@ const CRITIQUE_ROLES: { role: PromptRole; label: string }[] = [
   { role: "critique_sales", label: "Sales Critique Prompt" },
   { role: "critique_cs", label: "Customer Success Critique Prompt" }
 ];
+const SUMMARY_PROMPT: { role: PromptRole; label: string } = {
+  role: "summary",
+  label: "Summary Prompt"
+};
 
 const ARTIFACT_TYPES: { type: ArtifactType; label: string }[] = [
   { type: "summary", label: "Summarize" },
@@ -98,8 +102,8 @@ function Icon({ name }: { name: IconName }) {
     case "settings":
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
-          <path d="M12 3.5v2.3M12 18.2v2.3M20.5 12h-2.3M5.8 12H3.5M18.1 5.9l-1.6 1.6M7.5 16.5l-1.6 1.6M18.1 18.1l-1.6-1.6M7.5 7.5L5.9 5.9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          <path d="M10.3 3.8h3.4l.5 2.1c.4.1.8.3 1.2.5l1.9-1.1 2.4 2.4-1.1 1.9c.2.4.4.8.5 1.2l2.1.5v3.4l-2.1.5c-.1.4-.3.8-.5 1.2l1.1 1.9-2.4 2.4-1.9-1.1c-.4.2-.8.4-1.2.5l-.5 2.1h-3.4l-.5-2.1c-.4-.1-.8-.3-1.2-.5l-1.9 1.1-2.4-2.4 1.1-1.9c-.2-.4-.4-.8-.5-1.2l-2.1-.5v-3.4l2.1-.5c.1-.4.3-.8.5-1.2l-1.1-1.9 2.4-2.4 1.9 1.1c.4-.2.8-.4 1.2-.5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+          <circle cx="12" cy="12" r="2.8" fill="none" stroke="currentColor" strokeWidth="1.7" />
         </svg>
       );
     case "refresh":
@@ -144,6 +148,21 @@ function formatDate(ts: string) {
   return new Date(ts).toLocaleString();
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
 export default function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapState | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
@@ -173,6 +192,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [critiqueType, setCritiqueType] = useState<ArtifactType>("critique_recruitment");
+  const [folderNameDraft, setFolderNameDraft] = useState("");
+  const [entryNameDraft, setEntryNameDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -340,6 +361,20 @@ export default function App() {
       try {
         await reloadBootstrap(false);
         await loadRecordingDevices(true);
+        void api
+          .prepareAiBackend()
+          .then((message) => {
+            if (
+              message &&
+              !message.toLowerCase().startsWith("ai backend ready")
+            ) {
+              setNotice(message);
+            }
+          })
+          .catch((taskError) => {
+            const message = taskError instanceof Error ? taskError.message : String(taskError);
+            setNotice(`AI backend is not ready yet: ${message}`);
+          });
       } catch (taskError) {
         const message = taskError instanceof Error ? taskError.message : String(taskError);
         setError(message);
@@ -497,7 +532,11 @@ export default function App() {
   }
 
   async function loadRecordingDevices(applyStartupDefaults = false) {
-    const devices = await api.listRecordingDevices();
+    const devices = await withTimeout(
+      api.listRecordingDevices(),
+      10000,
+      "Audio device detection timed out. You can still use the app and retry refresh."
+    );
     setRecordingDevices(devices);
     if (devices.length === 0) {
       return;
@@ -533,13 +572,10 @@ export default function App() {
 
   function createFolderFromCurrentSelection() {
     const fallback = selectedFolderId ? defaultLabel("Subfolder") : defaultLabel("Folder");
-    const typed = window.prompt("Folder name", fallback);
-    if (typed === null) {
-      return;
-    }
-    const name = typed.trim() || fallback;
+    const name = folderNameDraft.trim() || fallback;
     runTask(async () => {
       await api.createFolder(name, selectedFolderId);
+      setFolderNameDraft("");
     }, "Folder created");
   }
 
@@ -547,13 +583,14 @@ export default function App() {
     if (!selectedFolderId) {
       return;
     }
-    const currentName = bootstrap?.folders.find((folder) => folder.id === selectedFolderId)?.name ?? "Folder";
-    const name = window.prompt("Rename folder", currentName);
+    const name = folderNameDraft.trim();
     if (!name) {
+      setError("Type a folder name first, then press rename.");
       return;
     }
     runTask(async () => {
       await api.renameFolder(selectedFolderId, name);
+      setFolderNameDraft("");
     }, "Folder renamed");
   }
 
@@ -562,14 +599,10 @@ export default function App() {
       setError("Select a folder first");
       return;
     }
-    const fallback = defaultLabel("Entry");
-    const typed = window.prompt("Entry title", fallback);
-    if (typed === null) {
-      return;
-    }
-    const title = typed.trim() || fallback;
+    const title = entryNameDraft.trim() || defaultLabel("Entry");
     runTask(async () => {
       await api.createEntry(selectedFolderId, title);
+      setEntryNameDraft("");
     }, "Entry created");
   }
 
@@ -674,6 +707,30 @@ export default function App() {
             Use <code>turbo</code>/<code>large-v3</code> with OpenAI Whisper CLI (<code>whisper</code>), or
             use local <code>ggml-*.bin</code> models with <code>whisper-cli</code>.
           </p>
+
+          <div className="artifact-block">
+            <p>
+              <strong>{SUMMARY_PROMPT.label}</strong>
+            </p>
+            <textarea
+              className="medium-text"
+              value={promptDrafts[SUMMARY_PROMPT.role]}
+              onChange={(event) =>
+                setPromptDrafts({ ...promptDrafts, [SUMMARY_PROMPT.role]: event.target.value })
+              }
+            />
+            <button
+              disabled={busy}
+              onClick={() =>
+                runTask(
+                  async () => api.updatePrompt(SUMMARY_PROMPT.role, promptDrafts[SUMMARY_PROMPT.role]),
+                  `${SUMMARY_PROMPT.label} updated`
+                )
+              }
+            >
+              Save {SUMMARY_PROMPT.label}
+            </button>
+          </div>
 
           {CRITIQUE_ROLES.map((item) => (
             <div key={item.role} className="artifact-block">
@@ -793,6 +850,13 @@ export default function App() {
               </button>
             </div>
           </div>
+          <input
+            value={folderNameDraft}
+            onChange={(event) => setFolderNameDraft(event.target.value)}
+            placeholder={selectedFolderId ? "Subfolder / rename name" : "Folder name"}
+            disabled={busy}
+            className="panel-name-input"
+          />
           <ul className="tree-list">{renderFolderNodes(null)}</ul>
         </aside>
 
@@ -811,6 +875,13 @@ export default function App() {
               </button>
             </div>
           </div>
+          <input
+            value={entryNameDraft}
+            onChange={(event) => setEntryNameDraft(event.target.value)}
+            placeholder="Entry title"
+            disabled={busy || !selectedFolderId}
+            className="panel-name-input"
+          />
           {activeEntries.map((entry: Entry) => (
             <div
               key={entry.id}
