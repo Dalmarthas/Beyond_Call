@@ -66,6 +66,130 @@ const CRITIQUE_ACTIONS: { type: ArtifactType; label: string }[] = [
   { type: "critique_cs", label: "Customer Success" }
 ];
 
+const RU_TRANSLATIONS: Record<string, string> = {
+  "AI Call Recorder Local": "AI Запись Звонков Локально",
+  "Local Model & Prompt Settings": "Настройки Моделей и Промптов",
+  Settings: "Настройки",
+  Trash: "Корзина",
+  "Close settings": "Закрыть настройки",
+  "Close trash": "Закрыть корзину",
+  "Interface Language": "Язык интерфейса",
+  "Ollama Model Name": "Название модели Ollama",
+  "Save Model": "Сохранить модель",
+  "Model name updated": "Название модели обновлено",
+  "Whisper Model": "Модель Whisper",
+  "Custom Whisper Model (optional)": "Пользовательская модель Whisper (необязательно)",
+  "Save Whisper Model": "Сохранить модель Whisper",
+  "Refresh Whisper Models": "Обновить модели Whisper",
+  "Whisper model updated": "Модель Whisper обновлена",
+  "Whisper models refreshed": "Список моделей Whisper обновлен",
+  "Use turbo/large-v3 with OpenAI Whisper CLI (whisper), or use local ggml-*.bin models with whisper-cli.":
+    "Используйте turbo/large-v3 с OpenAI Whisper CLI (whisper) или локальные модели ggml-*.bin с whisper-cli.",
+  "Summary Prompt": "Промпт для Саммари",
+  "Recruitment Critique Prompt": "Промпт критики: Рекрутинг",
+  "Sales Critique Prompt": "Промпт критики: Продажи",
+  "Customer Success Critique Prompt": "Промпт критики: Customer Success",
+  "Save Prompt": "Сохранить промпт",
+  "Folders": "Папки",
+  Entries: "Записи",
+  Restore: "Восстановить",
+  Purge: "Удалить навсегда",
+  Workspace: "Рабочее пространство",
+  "Entry Detail": "Детали записи",
+  "Select an entry to work on recording and AI tasks.": "Выберите запись для работы с записью звонка и AI задачами.",
+  Status: "Статус",
+  recording: "запись",
+  recorded: "записано",
+  transcribed: "транскрибировано",
+  processed: "обработано",
+  edited: "изменено",
+  paused: "пауза",
+  transcribing: "транскрибация",
+  Duration: "Длительность",
+  "Refresh devices": "Обновить устройства",
+  "Audio devices refreshed": "Аудиоустройства обновлены",
+  "Add source": "Добавить источник",
+  "Remove source": "Удалить источник",
+  "Start recording": "Начать запись",
+  "Recording started": "Запись начата",
+  Pause: "Пауза",
+  "Recording paused": "Запись на паузе",
+  Resume: "Продолжить",
+  "Recording resumed": "Запись продолжена",
+  "Stop Recording": "Остановить запись",
+  "Recording stopped. Transcribing...": "Запись остановлена. Выполняется транскрибация...",
+  "Recording stopped and transcribed": "Запись остановлена и транскрибирована",
+  Transcribe: "Транскрибировать",
+  Summarize: "Саммари",
+  Analyze: "Анализ",
+  Critique: "Критика",
+  Export: "Экспорт",
+  "Transcription ready": "Транскрибация готова",
+  "Summarize completed": "Саммари готово",
+  "Analyze completed": "Анализ готов",
+  "Recording in progress": "Идет запись",
+  "Transcribing latest recording": "Транскрибация последней записи",
+  "Signal level": "Уровень сигнала",
+  Captured: "Записано",
+  "Transcription Language": "Язык транскрибации",
+  "Auto detect": "Автоопределение",
+  Russian: "Русский",
+  English: "Английский",
+  Ukrainian: "Украинский",
+  Spanish: "Испанский",
+  German: "Немецкий",
+  French: "Французский",
+  Version: "Версия",
+  Language: "Язык",
+  Updated: "Обновлено",
+  Transcript: "Транскрипт",
+  "Transcript text": "Текст транскрипта",
+  "Transcript saved": "Транскрипт сохранен",
+  Artifacts: "Артефакты",
+  stale: "устарело",
+  Save: "Сохранить",
+  Recruitment: "Рекрутинг",
+  Sales: "Продажи",
+  "Customer Success": "Customer Success",
+  "Critique: Recruitment": "Критика: Рекрутинг",
+  "Critique: Sales": "Критика: Продажи",
+  "Critique: Customer Success": "Критика: Customer Success",
+  "Add subfolder": "Добавить подпапку",
+  "Add folder": "Добавить папку",
+  "Add entry": "Добавить запись",
+  "Rename selected": "Переименовать выбранное",
+  "Delete selected": "Удалить выбранное",
+  "Entry name": "Название записи",
+  "Subfolder, entry, or rename": "Подпапка, запись или новое имя",
+  "Workspace item name": "Название элемента",
+  Subfolder: "Подпапка",
+  Folder: "Папка",
+  Entry: "Запись",
+  "Folder created": "Папка создана",
+  "Entry created": "Запись создана",
+  "Type a new name first, then press rename.": "Сначала введите новое имя, затем нажмите переименовать.",
+  "Entry renamed": "Запись переименована",
+  "Folder renamed": "Папка переименована",
+  "Select a folder first": "Сначала выберите папку",
+  "Select a folder or entry first.": "Сначала выберите папку или запись.",
+  "Entry moved to trash": "Запись перемещена в корзину",
+  "Folder moved to trash": "Папка перемещена в корзину",
+  "Audio device detection timed out. You can still use the app and retry refresh.":
+    "Истекло время ожидания определения аудиоустройств. Вы можете продолжить работу и обновить позже.",
+  "AI backend is not ready yet:": "AI-бэкенд пока не готов:",
+  "Export created at": "Экспорт создан в",
+  "updated": "обновлено",
+  "Save Summary Prompt": "Сохранить промпт для Саммари",
+  "Summary Prompt updated": "Промпт для Саммари обновлен",
+  "Recording signal meter": "Индикатор сигнала записи",
+  "Save Transcript": "Сохранить транскрипт",
+  completed: "завершено",
+  saved: "сохранено",
+  "turbo | large-v3 | ggml-base.bin | /path/to/model.bin":
+    "turbo | large-v3 | ggml-base.bin | /путь/к/модели.bin",
+  new: "новая"
+};
+
 type IconName =
   | "folder-plus"
   | "entry-plus"
@@ -186,6 +310,13 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 }
 
 export default function App() {
+  const [uiLanguage, setUiLanguage] = useState<"en" | "ru">(() => {
+    if (typeof window === "undefined") {
+      return "en";
+    }
+    const saved = window.localStorage.getItem("ui_language");
+    return saved === "ru" ? "ru" : "en";
+  });
   const [bootstrap, setBootstrap] = useState<BootstrapState | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
@@ -224,6 +355,7 @@ export default function App() {
   const [recordingBytes, setRecordingBytes] = useState(0);
   const [meterBars, setMeterBars] = useState<number[]>(() => Array.from({ length: 24 }, () => 0.02));
   const [transcriptionLanguage, setTranscriptionLanguage] = useState<string>("auto");
+  const tt = (text: string) => (uiLanguage === "ru" ? RU_TRANSLATIONS[text] ?? text : text);
 
   const activeEntry = useMemo(() => {
     if (!bootstrap || !selectedEntryId) {
@@ -380,6 +512,12 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("ui_language", uiLanguage);
+    }
+  }, [uiLanguage]);
+
+  useEffect(() => {
     const bootstrap = async () => {
       setBusy(true);
       setError(null);
@@ -398,7 +536,7 @@ export default function App() {
           })
           .catch((taskError) => {
             const message = taskError instanceof Error ? taskError.message : String(taskError);
-            setNotice(`AI backend is not ready yet: ${message}`);
+            setNotice(`${tt("AI backend is not ready yet:")} ${message}`);
           });
       } catch (taskError) {
         const message = taskError instanceof Error ? taskError.message : String(taskError);
@@ -582,7 +720,7 @@ export default function App() {
     const devices = await withTimeout(
       api.listRecordingDevices(),
       10000,
-      "Audio device detection timed out. You can still use the app and retry refresh."
+      tt("Audio device detection timed out. You can still use the app and retry refresh.")
     );
     setRecordingDevices(devices);
     if (devices.length === 0) {
@@ -614,51 +752,51 @@ export default function App() {
   }
 
   function artifactLabel(type: ArtifactType) {
-    return ARTIFACT_TYPES.find((item) => item.type === type)?.label ?? type;
+    return tt(ARTIFACT_TYPES.find((item) => item.type === type)?.label ?? type);
   }
 
   function createFolderFromCurrentSelection() {
-    const fallback = selectedFolderId ? defaultLabel("Subfolder") : defaultLabel("Folder");
+    const fallback = selectedFolderId ? defaultLabel(tt("Subfolder")) : defaultLabel(tt("Folder"));
     const name = workspaceNameDraft.trim() || fallback;
     runTask(async () => {
       await api.createFolder(name, selectedFolderId);
       setWorkspaceNameDraft("");
-    }, "Folder created");
+    }, tt("Folder created"));
   }
 
   function createEntryForSelectedFolder() {
     if (!selectedFolderId) {
-      setError("Select a folder first");
+      setError(tt("Select a folder first"));
       return;
     }
-    const title = workspaceNameDraft.trim() || defaultLabel("Entry");
+    const title = workspaceNameDraft.trim() || defaultLabel(tt("Entry"));
     runTask(async () => {
       await api.createEntry(selectedFolderId, title);
       setWorkspaceNameDraft("");
-    }, "Entry created");
+    }, tt("Entry created"));
   }
 
   function renameSelectedEntity() {
     const name = workspaceNameDraft.trim();
     if (!name) {
-      setError("Type a new name first, then press rename.");
+      setError(tt("Type a new name first, then press rename."));
       return;
     }
     if (selectedEntryId) {
       runTask(async () => {
         await api.renameEntry(selectedEntryId, name);
         setWorkspaceNameDraft("");
-      }, "Entry renamed");
+      }, tt("Entry renamed"));
       return;
     }
     if (selectedFolderId) {
       runTask(async () => {
         await api.renameFolder(selectedFolderId, name);
         setWorkspaceNameDraft("");
-      }, "Folder renamed");
+      }, tt("Folder renamed"));
       return;
     }
-    setError("Select a folder or entry first.");
+    setError(tt("Select a folder or entry first."));
   }
 
   function moveSelectedEntityToTrash() {
@@ -667,29 +805,29 @@ export default function App() {
         await api.moveToTrash("entry", selectedEntryId);
         setSelectedEntryId(null);
         setEntryBundle(null);
-      }, "Entry moved to trash");
+      }, tt("Entry moved to trash"));
       return;
     }
     if (selectedFolderId) {
       runTask(async () => {
         await api.moveToTrash("folder", selectedFolderId);
         setSelectedFolderId(null);
-      }, "Folder moved to trash");
+      }, tt("Folder moved to trash"));
       return;
     }
-    setError("Select a folder or entry first.");
+    setError(tt("Select a folder or entry first."));
   }
 
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="header-title-row">
-          <h1>AI Call Recorder Local</h1>
+          <h1>{tt("AI Call Recorder Local")}</h1>
           <div className="header-icon-actions">
             <button
               className={showSettings ? "icon-only active" : "icon-only"}
-              title="Settings"
-              aria-label="Settings"
+              title={tt("Settings")}
+              aria-label={tt("Settings")}
               onClick={() => {
                 setShowSettings((current) => !current);
                 setShowTrash(false);
@@ -699,8 +837,8 @@ export default function App() {
             </button>
             <button
               className={showTrash ? "icon-only active" : "icon-only"}
-              title="Trash"
-              aria-label="Trash"
+              title={tt("Trash")}
+              aria-label={tt("Trash")}
               onClick={() => {
                 setShowTrash((current) => !current);
                 setShowSettings(false);
@@ -715,28 +853,38 @@ export default function App() {
       {showSettings && (
         <section className="card flyout-panel">
           <div className="panel-heading">
-            <h2>Local Model & Prompt Settings</h2>
+            <h2>{tt("Local Model & Prompt Settings")}</h2>
             <button
               className="icon-only"
-              aria-label="Close settings"
-              title="Close settings"
+              aria-label={tt("Close settings")}
+              title={tt("Close settings")}
               onClick={() => setShowSettings(false)}
             >
               <Icon name="remove" />
             </button>
           </div>
           <label>
-            Ollama Model Name
+            {tt("Interface Language")}
+            <select
+              value={uiLanguage}
+              onChange={(event) => setUiLanguage(event.target.value as "en" | "ru")}
+            >
+              <option value="en">{tt("English")}</option>
+              <option value="ru">{tt("Russian")}</option>
+            </select>
+          </label>
+          <label>
+            {tt("Ollama Model Name")}
             <input value={modelName} onChange={(event) => setModelName(event.target.value)} />
           </label>
           <button
             disabled={busy}
-            onClick={() => runTask(async () => api.updateModelName(modelName), "Model name updated")}
+            onClick={() => runTask(async () => api.updateModelName(modelName), tt("Model name updated"))}
           >
-            Save Model
+            {tt("Save Model")}
           </button>
           <label>
-            Whisper Model
+            {tt("Whisper Model")}
             <select
               value={whisperModel}
               onChange={(event) => setWhisperModel(event.target.value)}
@@ -749,21 +897,21 @@ export default function App() {
             </select>
           </label>
           <label>
-            Custom Whisper Model (optional)
+            {tt("Custom Whisper Model (optional)")}
             <input
               value={whisperModel}
               onChange={(event) => setWhisperModel(event.target.value)}
-              placeholder="turbo | large-v3 | ggml-base.bin | /path/to/model.bin"
+              placeholder={tt("turbo | large-v3 | ggml-base.bin | /path/to/model.bin")}
             />
           </label>
           <div className="action-row">
             <button
               disabled={busy}
               onClick={() =>
-                runTask(async () => api.updateWhisperModel(whisperModel), "Whisper model updated")
+                runTask(async () => api.updateWhisperModel(whisperModel), tt("Whisper model updated"))
               }
             >
-              Save Whisper Model
+              {tt("Save Whisper Model")}
             </button>
             <button
               disabled={busy}
@@ -771,20 +919,19 @@ export default function App() {
                 runTask(async () => {
                   const models = await api.listWhisperModels();
                   setWhisperModelOptions(Array.from(new Set([whisperModel, ...models])));
-                }, "Whisper models refreshed")
+                }, tt("Whisper models refreshed"))
               }
             >
-              Refresh Whisper Models
+              {tt("Refresh Whisper Models")}
             </button>
           </div>
           <p className="help-text">
-            Use <code>turbo</code>/<code>large-v3</code> with OpenAI Whisper CLI (<code>whisper</code>), or
-            use local <code>ggml-*.bin</code> models with <code>whisper-cli</code>.
+            {tt("Use turbo/large-v3 with OpenAI Whisper CLI (whisper), or use local ggml-*.bin models with whisper-cli.")}
           </p>
 
           <div className="artifact-block">
             <p>
-              <strong>{SUMMARY_PROMPT.label}</strong>
+              <strong>{tt(SUMMARY_PROMPT.label)}</strong>
             </p>
             <textarea
               className="medium-text"
@@ -798,18 +945,18 @@ export default function App() {
               onClick={() =>
                 runTask(
                   async () => api.updatePrompt(SUMMARY_PROMPT.role, promptDrafts[SUMMARY_PROMPT.role]),
-                  `${SUMMARY_PROMPT.label} updated`
+                  `${tt(SUMMARY_PROMPT.label)} ${tt("updated")}`
                 )
               }
             >
-              Save {SUMMARY_PROMPT.label}
+              {tt("Save")} {tt(SUMMARY_PROMPT.label)}
             </button>
           </div>
 
           {CRITIQUE_ROLES.map((item) => (
             <div key={item.role} className="artifact-block">
               <p>
-                <strong>{item.label}</strong>
+                <strong>{tt(item.label)}</strong>
               </p>
               <textarea
                 className="medium-text"
@@ -823,11 +970,11 @@ export default function App() {
                 onClick={() =>
                   runTask(
                     async () => api.updatePrompt(item.role, promptDrafts[item.role]),
-                    `${item.label} updated`
+                    `${tt(item.label)} ${tt("updated")}`
                   )
                 }
               >
-                Save Prompt
+                {tt("Save Prompt")}
               </button>
             </div>
           ))}
@@ -837,11 +984,11 @@ export default function App() {
       {showTrash && (
         <section className="card flyout-panel">
           <div className="panel-heading">
-            <h2>Trash</h2>
+            <h2>{tt("Trash")}</h2>
             <button
               className="icon-only"
-              aria-label="Close trash"
-              title="Close trash"
+              aria-label={tt("Close trash")}
+              title={tt("Close trash")}
               onClick={() => setShowTrash(false)}
             >
               <Icon name="remove" />
@@ -849,29 +996,29 @@ export default function App() {
           </div>
           <div className="trash-grid">
             <div>
-              <h3>Folders</h3>
+              <h3>{tt("Folders")}</h3>
               {trashedFolders.map((folder) => (
                 <div key={folder.id} className="trash-row">
                   <span>{folder.name}</span>
                   <button onClick={() => runTask(async () => api.restoreFromTrash("folder", folder.id))}>
-                    Restore
+                    {tt("Restore")}
                   </button>
                   <button onClick={() => runTask(async () => api.purgeEntity("folder", folder.id))}>
-                    Purge
+                    {tt("Purge")}
                   </button>
                 </div>
               ))}
             </div>
             <div>
-              <h3>Entries</h3>
+              <h3>{tt("Entries")}</h3>
               {trashedEntries.map((entry) => (
                 <div key={entry.id} className="trash-row">
                   <span>{entry.title}</span>
                   <button onClick={() => runTask(async () => api.restoreFromTrash("entry", entry.id))}>
-                    Restore
+                    {tt("Restore")}
                   </button>
                   <button onClick={() => runTask(async () => api.purgeEntity("entry", entry.id))}>
-                    Purge
+                    {tt("Purge")}
                   </button>
                 </div>
               ))}
@@ -886,12 +1033,12 @@ export default function App() {
       <main className="layout-grid">
         <aside className="card workspace-panel">
           <div className="panel-heading">
-            <h2>Workspace</h2>
+            <h2>{tt("Workspace")}</h2>
             <div className="icon-button-group">
               <button
                 className="icon-only"
-                title={selectedFolderId ? "Add subfolder" : "Add folder"}
-                aria-label={selectedFolderId ? "Add subfolder" : "Add folder"}
+                title={selectedFolderId ? tt("Add subfolder") : tt("Add folder")}
+                aria-label={selectedFolderId ? tt("Add subfolder") : tt("Add folder")}
                 disabled={busy}
                 onClick={createFolderFromCurrentSelection}
               >
@@ -899,8 +1046,8 @@ export default function App() {
               </button>
               <button
                 className="icon-only"
-                title="Add entry"
-                aria-label="Add entry"
+                title={tt("Add entry")}
+                aria-label={tt("Add entry")}
                 disabled={busy || !selectedFolderId}
                 onClick={createEntryForSelectedFolder}
               >
@@ -908,8 +1055,8 @@ export default function App() {
               </button>
               <button
                 className="icon-only"
-                title="Rename selected"
-                aria-label="Rename selected"
+                title={tt("Rename selected")}
+                aria-label={tt("Rename selected")}
                 disabled={busy || (!selectedFolderId && !selectedEntryId)}
                 onClick={renameSelectedEntity}
               >
@@ -917,8 +1064,8 @@ export default function App() {
               </button>
               <button
                 className="icon-only"
-                title="Delete selected"
-                aria-label="Delete selected"
+                title={tt("Delete selected")}
+                aria-label={tt("Delete selected")}
                 disabled={busy || (!selectedFolderId && !selectedEntryId)}
                 onClick={moveSelectedEntityToTrash}
               >
@@ -931,10 +1078,10 @@ export default function App() {
             onChange={(event) => setWorkspaceNameDraft(event.target.value)}
             placeholder={
               selectedEntryId
-                ? "Entry name"
+                ? tt("Entry name")
                 : selectedFolderId
-                  ? "Subfolder, entry, or rename"
-                  : "Workspace item name"
+                  ? tt("Subfolder, entry, or rename")
+                  : tt("Workspace item name")
             }
             disabled={busy}
             className="panel-name-input"
@@ -943,8 +1090,8 @@ export default function App() {
         </aside>
 
         <section className="card detail-panel">
-          <h2>Entry Detail</h2>
-          {!activeEntry && <p>Select an entry to work on recording and AI tasks.</p>}
+          <h2>{tt("Entry Detail")}</h2>
+          {!activeEntry && <p>{tt("Select an entry to work on recording and AI tasks.")}</p>}
 
           {activeEntry && (
             <>
@@ -958,31 +1105,31 @@ export default function App() {
                     : "status-pill"
                 }
               >
-                Status: {recordingSessionId ? "recording" : activeEntry.status}
-                {recordingPaused ? " (paused)" : ""}
-                {transcribingAfterStop ? " (transcribing)" : ""}
+                {tt("Status")}: {recordingSessionId ? tt("recording") : tt(activeEntry.status)}
+                {recordingPaused ? ` (${tt("paused")})` : ""}
+                {transcribingAfterStop ? ` (${tt("transcribing")})` : ""}
               </p>
-              <p>Duration: {activeEntry.duration_sec}s</p>
+              <p>{tt("Duration")}: {activeEntry.duration_sec}s</p>
 
               <div className="source-controls">
                   <div className="source-icon-row">
                     <button
                       className="icon-only"
-                      title="Refresh devices"
-                      aria-label="Refresh devices"
+                      title={tt("Refresh devices")}
+                      aria-label={tt("Refresh devices")}
                       disabled={busy}
                       onClick={() =>
                         runTask(async () => {
                           await loadRecordingDevices();
-                        }, "Audio devices refreshed")
+                        }, tt("Audio devices refreshed"))
                       }
                     >
                       <Icon name="refresh" />
                     </button>
                     <button
                       className="icon-only"
-                      title="Add source"
-                      aria-label="Add source"
+                      title={tt("Add source")}
+                      aria-label={tt("Add source")}
                       disabled={busy || recordingDevices.length === 0}
                       onClick={() => {
                         const used = new Set(sources.map((source) => sourceKey(source)));
@@ -1026,8 +1173,8 @@ export default function App() {
                       </select>
                       <button
                         className="icon-only"
-                        title="Remove source"
-                        aria-label="Remove source"
+                        title={tt("Remove source")}
+                        aria-label={tt("Remove source")}
                         disabled={busy || sources.length <= 1}
                         onClick={() => setSources(sources.filter((_, i) => i !== index))}
                       >
@@ -1042,15 +1189,15 @@ export default function App() {
                   {!recordingSessionId ? (
                     <button
                       className="record-button"
-                      title="Start recording"
-                      aria-label="Start recording"
+                      title={tt("Start recording")}
+                      aria-label={tt("Start recording")}
                       disabled={busy || transcribingAfterStop || sources.length === 0}
                       onClick={() => {
                         runTask(async () => {
                           const sessionId = await api.startRecording(activeEntry.id, sources);
                           setRecordingSessionId(sessionId);
                           setRecordingPaused(false);
-                        }, "Recording started");
+                        }, tt("Recording started"));
                       }}
                     >
                       <span className="record-dot" />
@@ -1069,11 +1216,11 @@ export default function App() {
                                 await api.setRecordingPaused(recordingSessionId, true);
                                 setRecordingPaused(true);
                               },
-                              "Recording paused"
+                              tt("Recording paused")
                             );
                           }}
                         >
-                          Pause
+                          {tt("Pause")}
                         </button>
                       ) : (
                         <button
@@ -1087,11 +1234,11 @@ export default function App() {
                                 await api.setRecordingPaused(recordingSessionId, false);
                                 setRecordingPaused(false);
                               },
-                              "Recording resumed"
+                              tt("Recording resumed")
                             );
                           }}
                         >
-                          Resume
+                          {tt("Resume")}
                         </button>
                       )}
                       <button
@@ -1109,7 +1256,7 @@ export default function App() {
                             setRecordingSessionId(null);
                             setRecordingPaused(false);
                             await reloadBootstrap(true);
-                            setNotice("Recording stopped. Transcribing...");
+                            setNotice(tt("Recording stopped. Transcribing..."));
                           } catch (taskError) {
                             const message = taskError instanceof Error ? taskError.message : String(taskError);
                             setError(message);
@@ -1124,7 +1271,7 @@ export default function App() {
                             await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
                             await reloadBootstrap(true);
                             await loadEntryBundle(activeEntry.id);
-                            setNotice("Recording stopped and transcribed");
+                            setNotice(tt("Recording stopped and transcribed"));
                           } catch (taskError) {
                             const message = taskError instanceof Error ? taskError.message : String(taskError);
                             setNotice(null);
@@ -1134,7 +1281,7 @@ export default function App() {
                           }
                         }}
                       >
-                        Stop Recording
+                        {tt("Stop Recording")}
                       </button>
                     </>
                   )}
@@ -1146,33 +1293,33 @@ export default function App() {
                     onClick={() =>
                       runTask(
                         async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
-                        "Transcription ready"
+                        tt("Transcription ready")
                       )
                     }
                   >
-                    Transcribe
+                    {tt("Transcribe")}
                   </button>
                   <button
                     disabled={!canRunPostRecordingActions || busy}
                     onClick={() =>
                       runTask(
                         async () => api.generateArtifact(activeEntry.id, "summary"),
-                        "Summarize completed"
+                        tt("Summarize completed")
                       )
                     }
                   >
-                    Summarize
+                    {tt("Summarize")}
                   </button>
                   <button
                     disabled={!canRunPostRecordingActions || busy}
                     onClick={() =>
                       runTask(
                         async () => api.generateArtifact(activeEntry.id, "analysis"),
-                        "Analyze completed"
+                        tt("Analyze completed")
                       )
                     }
                   >
-                    Analyze
+                    {tt("Analyze")}
                   </button>
                   <div className="inline-select-action">
                     <select
@@ -1182,7 +1329,7 @@ export default function App() {
                     >
                       {CRITIQUE_ACTIONS.map((item) => (
                         <option key={item.type} value={item.type}>
-                          {item.label}
+                          {tt(item.label)}
                         </option>
                       ))}
                     </select>
@@ -1191,11 +1338,11 @@ export default function App() {
                       onClick={() =>
                         runTask(
                           async () => api.generateArtifact(activeEntry.id, critiqueType),
-                          `${artifactLabel(critiqueType)} completed`
+                          `${artifactLabel(critiqueType)} ${tt("completed")}`
                         )
                       }
                     >
-                      Critique
+                      {tt("Critique")}
                     </button>
                   </div>
                   <button
@@ -1203,11 +1350,11 @@ export default function App() {
                     onClick={() => {
                       runTask(async () => {
                         const path = await api.exportEntry(activeEntry.id);
-                        setNotice(`Export created at ${path}`);
+                        setNotice(`${tt("Export created at")} ${path}`);
                       });
                     }}
                   >
-                    Export
+                    {tt("Export")}
                   </button>
                 </div>
               </div>
@@ -1215,11 +1362,11 @@ export default function App() {
               {(recordingSessionId || transcribingAfterStop) && (
                 <div className="recording-monitor">
                   <p className="recording-live">
-                    {recordingSessionId ? "Recording in progress" : "Transcribing latest recording"}
+                    {recordingSessionId ? tt("Recording in progress") : tt("Transcribing latest recording")}
                   </p>
                   {recordingSessionId && (
                     <>
-                      <div className="meter-strip" aria-label="Recording signal meter">
+                      <div className="meter-strip" aria-label={tt("Recording signal meter")}>
                         {meterBars.map((bar, index) => (
                           <span
                             key={`bar-${index}`}
@@ -1229,16 +1376,17 @@ export default function App() {
                         ))}
                       </div>
                       <p className="help-text">
-                        Signal level: {Math.round(recordingLevel * 100)}% | Captured: {formatBytes(recordingBytes)}
+                        {tt("Signal level")}: {Math.round(recordingLevel * 100)}% | {tt("Captured")}:{" "}
+                        {formatBytes(recordingBytes)}
                       </p>
                     </>
                   )}
                 </div>
               )}
 
-              <h3>Transcript</h3>
+              <h3>{tt("Transcript")}</h3>
               <label>
-                Transcription Language
+                {tt("Transcription Language")}
                 <select
                   value={transcriptionLanguage}
                   disabled={busy || Boolean(recordingSessionId)}
@@ -1246,14 +1394,15 @@ export default function App() {
                 >
                   {TRANSCRIPTION_LANGUAGES.map((language) => (
                     <option key={language.value} value={language.value}>
-                      {language.label}
+                      {tt(language.label)}
                     </option>
                   ))}
                 </select>
               </label>
               {latestTranscript && (
                 <p className="help-text">
-                  Version {latestTranscript.version} | Language: {latestTranscript.language} | Updated:{" "}
+                  {tt("Version")} {latestTranscript.version} | {tt("Language")}: {latestTranscript.language} |{" "}
+                  {tt("Updated")}:{" "}
                   {formatDate(latestTranscript.created_at)}
                 </p>
               )}
@@ -1261,7 +1410,7 @@ export default function App() {
                 className="large-text"
                 value={transcriptDraft}
                 onChange={(event) => setTranscriptDraft(event.target.value)}
-                placeholder="Transcript text"
+                placeholder={tt("Transcript text")}
               />
               <button
                 disabled={busy || !activeEntry}
@@ -1269,16 +1418,16 @@ export default function App() {
                   const language = transcriptionLanguage || latestTranscript?.language || "auto";
                   runTask(
                     async () => api.updateTranscript(activeEntry.id, transcriptDraft, language),
-                    "Transcript saved"
+                    tt("Transcript saved")
                   );
                 }}
               >
-                Save Transcript
+                {tt("Save Transcript")}
               </button>
 
               {visibleArtifactTypes.length > 0 && (
                 <>
-                  <h3>Artifacts</h3>
+                  <h3>{tt("Artifacts")}</h3>
                   {visibleArtifactTypes.map((item) => {
                     const latestArtifact = entryBundle
                       ? latestByType(entryBundle.artifact_revisions, item.type)
@@ -1286,12 +1435,13 @@ export default function App() {
                     return (
                       <div key={item.type} className="artifact-block">
                         <p>
-                          <strong>{item.label}</strong>
+                          <strong>{tt(item.label)}</strong>
                         </p>
                         {latestArtifact && (
                           <p className="help-text">
-                            v{latestArtifact.version} | transcript v{latestArtifact.source_transcript_version}
-                            {latestArtifact.is_stale ? " | stale" : ""}
+                            v{latestArtifact.version} | {tt("Transcript").toLowerCase()} v
+                            {latestArtifact.source_transcript_version}
+                            {latestArtifact.is_stale ? ` | ${tt("stale")}` : ""}
                           </p>
                         )}
                         <textarea
@@ -1307,11 +1457,11 @@ export default function App() {
                             runTask(
                               async () =>
                                 api.updateArtifact(activeEntry.id, item.type, artifactDrafts[item.type]),
-                              `${item.label} saved`
+                              `${tt(item.label)} ${tt("saved")}`
                             )
                           }
                         >
-                          Save {item.label}
+                          {tt("Save")} {tt(item.label)}
                         </button>
                       </div>
                     );
