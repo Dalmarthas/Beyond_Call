@@ -66,7 +66,16 @@ const CRITIQUE_ACTIONS: { type: ArtifactType; label: string }[] = [
   { type: "critique_cs", label: "Customer Success" }
 ];
 
-type IconName = "folder-plus" | "entry-plus" | "edit" | "trash" | "settings" | "refresh" | "remove";
+type IconName =
+  | "folder-plus"
+  | "entry-plus"
+  | "edit"
+  | "trash"
+  | "settings"
+  | "refresh"
+  | "remove"
+  | "folder"
+  | "entry";
 
 function Icon({ name }: { name: IconName }) {
   switch (name) {
@@ -83,6 +92,19 @@ function Icon({ name }: { name: IconName }) {
           <path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" strokeWidth="1.8" />
           <path d="M14 3v4h4" fill="none" stroke="currentColor" strokeWidth="1.8" />
           <path d="M12 11v6M9 14h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "folder":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 7h7l2 2h9v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+      );
+    case "entry":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M14 3v4h4" fill="none" stroke="currentColor" strokeWidth="1.8" />
         </svg>
       );
     case "edit":
@@ -192,8 +214,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [critiqueType, setCritiqueType] = useState<ArtifactType>("critique_recruitment");
-  const [folderNameDraft, setFolderNameDraft] = useState("");
-  const [entryNameDraft, setEntryNameDraft] = useState("");
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -211,14 +232,18 @@ export default function App() {
     return bootstrap.entries.find((entry) => entry.id === selectedEntryId) ?? null;
   }, [bootstrap, selectedEntryId]);
 
-  const activeEntries = useMemo(() => {
-    if (!bootstrap || !selectedFolderId) {
-      return [];
-    }
-    return bootstrap.entries
-      .filter((entry) => entry.folder_id === selectedFolderId && !entry.deleted_at)
+  const entriesByFolder = useMemo(() => {
+    const map = new Map<string, Entry[]>();
+    const entries = (bootstrap?.entries ?? [])
+      .filter((entry) => !entry.deleted_at)
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
-  }, [bootstrap, selectedFolderId]);
+    for (const entry of entries) {
+      const current = map.get(entry.folder_id) ?? [];
+      current.push(entry);
+      map.set(entry.folder_id, current);
+    }
+    return map;
+  }, [bootstrap?.entries]);
 
   const trashedFolders = useMemo(
     () => bootstrap?.folders.filter((folder) => folder.deleted_at) ?? [],
@@ -445,6 +470,10 @@ export default function App() {
   }, [entryBundle]);
 
   async function onSelectEntry(entryId: string) {
+    const entry = bootstrap?.entries.find((item) => item.id === entryId);
+    if (entry) {
+      setSelectedFolderId(entry.folder_id);
+    }
     setSelectedEntryId(entryId);
     setBusy(true);
     setError(null);
@@ -469,9 +498,27 @@ export default function App() {
             setEntryBundle(null);
           }}
         >
-          {folder.name}
+          <span className="node-icon">
+            <Icon name="folder" />
+          </span>
+          <span>{folder.name}</span>
         </button>
-        <ul className="tree-list">{renderFolderNodes(folder.id)}</ul>
+        <ul className="tree-list">
+          {(entriesByFolder.get(folder.id) ?? []).map((entry) => (
+            <li key={entry.id}>
+              <button
+                className={selectedEntryId === entry.id ? "tree-node entry active" : "tree-node entry"}
+                onClick={() => void onSelectEntry(entry.id)}
+              >
+                <span className="node-icon">
+                  <Icon name="entry" />
+                </span>
+                <span>{entry.title}</span>
+              </button>
+            </li>
+          ))}
+          {renderFolderNodes(folder.id)}
+        </ul>
       </li>
     ));
   }
@@ -572,26 +619,11 @@ export default function App() {
 
   function createFolderFromCurrentSelection() {
     const fallback = selectedFolderId ? defaultLabel("Subfolder") : defaultLabel("Folder");
-    const name = folderNameDraft.trim() || fallback;
+    const name = workspaceNameDraft.trim() || fallback;
     runTask(async () => {
       await api.createFolder(name, selectedFolderId);
-      setFolderNameDraft("");
+      setWorkspaceNameDraft("");
     }, "Folder created");
-  }
-
-  function renameSelectedFolder() {
-    if (!selectedFolderId) {
-      return;
-    }
-    const name = folderNameDraft.trim();
-    if (!name) {
-      setError("Type a folder name first, then press rename.");
-      return;
-    }
-    runTask(async () => {
-      await api.renameFolder(selectedFolderId, name);
-      setFolderNameDraft("");
-    }, "Folder renamed");
   }
 
   function createEntryForSelectedFolder() {
@@ -599,11 +631,53 @@ export default function App() {
       setError("Select a folder first");
       return;
     }
-    const title = entryNameDraft.trim() || defaultLabel("Entry");
+    const title = workspaceNameDraft.trim() || defaultLabel("Entry");
     runTask(async () => {
       await api.createEntry(selectedFolderId, title);
-      setEntryNameDraft("");
+      setWorkspaceNameDraft("");
     }, "Entry created");
+  }
+
+  function renameSelectedEntity() {
+    const name = workspaceNameDraft.trim();
+    if (!name) {
+      setError("Type a new name first, then press rename.");
+      return;
+    }
+    if (selectedEntryId) {
+      runTask(async () => {
+        await api.renameEntry(selectedEntryId, name);
+        setWorkspaceNameDraft("");
+      }, "Entry renamed");
+      return;
+    }
+    if (selectedFolderId) {
+      runTask(async () => {
+        await api.renameFolder(selectedFolderId, name);
+        setWorkspaceNameDraft("");
+      }, "Folder renamed");
+      return;
+    }
+    setError("Select a folder or entry first.");
+  }
+
+  function moveSelectedEntityToTrash() {
+    if (selectedEntryId) {
+      runTask(async () => {
+        await api.moveToTrash("entry", selectedEntryId);
+        setSelectedEntryId(null);
+        setEntryBundle(null);
+      }, "Entry moved to trash");
+      return;
+    }
+    if (selectedFolderId) {
+      runTask(async () => {
+        await api.moveToTrash("folder", selectedFolderId);
+        setSelectedFolderId(null);
+      }, "Folder moved to trash");
+      return;
+    }
+    setError("Select a folder or entry first.");
   }
 
   return (
@@ -810,9 +884,9 @@ export default function App() {
       {notice && <p className="status success">{notice}</p>}
 
       <main className="layout-grid">
-        <aside className="card side-panel">
+        <aside className="card workspace-panel">
           <div className="panel-heading">
-            <h2>Folders</h2>
+            <h2>Workspace</h2>
             <div className="icon-button-group">
               <button
                 className="icon-only"
@@ -825,47 +899,6 @@ export default function App() {
               </button>
               <button
                 className="icon-only"
-                title="Rename folder"
-                aria-label="Rename folder"
-                disabled={busy || !selectedFolderId}
-                onClick={renameSelectedFolder}
-              >
-                <Icon name="edit" />
-              </button>
-              <button
-                className="icon-only"
-                title="Delete folder"
-                aria-label="Delete folder"
-                disabled={busy || !selectedFolderId}
-                onClick={() => {
-                  if (!selectedFolderId) {
-                    return;
-                  }
-                  runTask(async () => {
-                    await api.moveToTrash("folder", selectedFolderId);
-                  }, "Folder moved to trash");
-                }}
-              >
-                <Icon name="trash" />
-              </button>
-            </div>
-          </div>
-          <input
-            value={folderNameDraft}
-            onChange={(event) => setFolderNameDraft(event.target.value)}
-            placeholder={selectedFolderId ? "Subfolder / rename name" : "Folder name"}
-            disabled={busy}
-            className="panel-name-input"
-          />
-          <ul className="tree-list">{renderFolderNodes(null)}</ul>
-        </aside>
-
-        <section className="card entry-panel">
-          <div className="panel-heading">
-            <h2>Entries</h2>
-            <div className="icon-button-group">
-              <button
-                className="icon-only"
                 title="Add entry"
                 aria-label="Add entry"
                 disabled={busy || !selectedFolderId}
@@ -873,59 +906,41 @@ export default function App() {
               >
                 <Icon name="entry-plus" />
               </button>
+              <button
+                className="icon-only"
+                title="Rename selected"
+                aria-label="Rename selected"
+                disabled={busy || (!selectedFolderId && !selectedEntryId)}
+                onClick={renameSelectedEntity}
+              >
+                <Icon name="edit" />
+              </button>
+              <button
+                className="icon-only"
+                title="Delete selected"
+                aria-label="Delete selected"
+                disabled={busy || (!selectedFolderId && !selectedEntryId)}
+                onClick={moveSelectedEntityToTrash}
+              >
+                <Icon name="trash" />
+              </button>
             </div>
           </div>
           <input
-            value={entryNameDraft}
-            onChange={(event) => setEntryNameDraft(event.target.value)}
-            placeholder="Entry title"
-            disabled={busy || !selectedFolderId}
+            value={workspaceNameDraft}
+            onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+            placeholder={
+              selectedEntryId
+                ? "Entry name"
+                : selectedFolderId
+                  ? "Subfolder, entry, or rename"
+                  : "Workspace item name"
+            }
+            disabled={busy}
             className="panel-name-input"
           />
-          {activeEntries.map((entry: Entry) => (
-            <div
-              key={entry.id}
-              className={selectedEntryId === entry.id ? "entry-row active" : "entry-row"}
-            >
-              <button className="entry-select" onClick={() => onSelectEntry(entry.id)}>
-                <strong>{entry.title}</strong>
-                <small>{formatDate(entry.created_at)}</small>
-              </button>
-              <div className="entry-actions">
-                <button
-                  className="icon-only small"
-                  title="Rename entry"
-                  aria-label="Rename entry"
-                  disabled={busy}
-                  onClick={() => {
-                    const title = window.prompt("Rename entry", entry.title);
-                    if (!title) {
-                      return;
-                    }
-                    runTask(async () => {
-                      await api.renameEntry(entry.id, title);
-                    }, "Entry renamed");
-                  }}
-                >
-                  <Icon name="edit" />
-                </button>
-                <button
-                  className="icon-only small"
-                  title="Delete entry"
-                  aria-label="Delete entry"
-                  disabled={busy}
-                  onClick={() => {
-                    runTask(async () => {
-                      await api.moveToTrash("entry", entry.id);
-                    }, "Entry moved to trash");
-                  }}
-                >
-                  <Icon name="trash" />
-                </button>
-              </div>
-            </div>
-          ))}
-        </section>
+          <ul className="tree-list">{renderFolderNodes(null)}</ul>
+        </aside>
 
         <section className="card detail-panel">
           <h2>Entry Detail</h2>
@@ -950,176 +965,251 @@ export default function App() {
               <p>Duration: {activeEntry.duration_sec}s</p>
 
               <div className="source-controls">
-                <button
-                  className="icon-only"
-                  title="Refresh devices"
-                  aria-label="Refresh devices"
-                  disabled={busy}
-                  onClick={() =>
-                    runTask(async () => {
-                      await loadRecordingDevices();
-                    }, "Audio devices refreshed")
-                  }
-                >
-                  <Icon name="refresh" />
-                </button>
-                {sources.map((source, index) => (
-                  <div className="source-row" key={`${source.label}-${index}`}>
-                    <select
-                      value={sourceKey(source)}
-                      onChange={(event) => {
-                        const selected = recordingDevices.find(
-                          (device) => deviceKey(device) === event.target.value
-                        );
-                        if (!selected) {
+                  <div className="source-icon-row">
+                    <button
+                      className="icon-only"
+                      title="Refresh devices"
+                      aria-label="Refresh devices"
+                      disabled={busy}
+                      onClick={() =>
+                        runTask(async () => {
+                          await loadRecordingDevices();
+                        }, "Audio devices refreshed")
+                      }
+                    >
+                      <Icon name="refresh" />
+                    </button>
+                    <button
+                      className="icon-only"
+                      title="Add source"
+                      aria-label="Add source"
+                      disabled={busy || recordingDevices.length === 0}
+                      onClick={() => {
+                        const used = new Set(sources.map((source) => sourceKey(source)));
+                        const candidate =
+                          recordingDevices.find(
+                            (device) => device.is_loopback && !used.has(deviceKey(device))
+                          ) ??
+                          recordingDevices.find((device) => !used.has(deviceKey(device))) ??
+                          recordingDevices[0];
+                        if (!candidate) {
                           return;
                         }
-                        const next = [...sources];
-                        next[index] = sourceFromDevice(selected);
-                        setSources(next);
+                        setSources([...sources, sourceFromDevice(candidate)]);
                       }}
-                      disabled={busy || recordingDevices.length === 0}
                     >
-                      {recordingDevices.map((device) => (
-                        <option key={deviceKey(device)} value={deviceKey(device)}>
-                          {device.name}
+                      <Icon name="entry-plus" />
+                    </button>
+                  </div>
+                  {sources.map((source, index) => (
+                    <div className="source-row" key={`${source.label}-${index}`}>
+                      <select
+                        value={sourceKey(source)}
+                        onChange={(event) => {
+                          const selected = recordingDevices.find(
+                            (device) => deviceKey(device) === event.target.value
+                          );
+                          if (!selected) {
+                            return;
+                          }
+                          const next = [...sources];
+                          next[index] = sourceFromDevice(selected);
+                          setSources(next);
+                        }}
+                        disabled={busy || recordingDevices.length === 0}
+                      >
+                        {recordingDevices.map((device) => (
+                          <option key={deviceKey(device)} value={deviceKey(device)}>
+                            {device.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="icon-only"
+                        title="Remove source"
+                        aria-label="Remove source"
+                        disabled={busy || sources.length <= 1}
+                        onClick={() => setSources(sources.filter((_, i) => i !== index))}
+                      >
+                        <Icon name="remove" />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+
+              <div className="record-action-row">
+                <div className="recording-controls">
+                  {!recordingSessionId ? (
+                    <button
+                      className="record-button"
+                      title="Start recording"
+                      aria-label="Start recording"
+                      disabled={busy || transcribingAfterStop || sources.length === 0}
+                      onClick={() => {
+                        runTask(async () => {
+                          const sessionId = await api.startRecording(activeEntry.id, sources);
+                          setRecordingSessionId(sessionId);
+                          setRecordingPaused(false);
+                        }, "Recording started");
+                      }}
+                    >
+                      <span className="record-dot" />
+                    </button>
+                  ) : (
+                    <>
+                      {!recordingPaused ? (
+                        <button
+                          disabled={busy || transcribingAfterStop}
+                          onClick={() => {
+                            if (!recordingSessionId) {
+                              return;
+                            }
+                            runTask(
+                              async () => {
+                                await api.setRecordingPaused(recordingSessionId, true);
+                                setRecordingPaused(true);
+                              },
+                              "Recording paused"
+                            );
+                          }}
+                        >
+                          Pause
+                        </button>
+                      ) : (
+                        <button
+                          disabled={busy || transcribingAfterStop}
+                          onClick={() => {
+                            if (!recordingSessionId) {
+                              return;
+                            }
+                            runTask(
+                              async () => {
+                                await api.setRecordingPaused(recordingSessionId, false);
+                                setRecordingPaused(false);
+                              },
+                              "Recording resumed"
+                            );
+                          }}
+                        >
+                          Resume
+                        </button>
+                      )}
+                      <button
+                        disabled={busy || transcribingAfterStop}
+                        onClick={async () => {
+                          if (!recordingSessionId) {
+                            return;
+                          }
+                          const sessionId = recordingSessionId;
+                          setBusy(true);
+                          setError(null);
+                          setNotice(null);
+                          try {
+                            await api.stopRecording(sessionId);
+                            setRecordingSessionId(null);
+                            setRecordingPaused(false);
+                            await reloadBootstrap(true);
+                            setNotice("Recording stopped. Transcribing...");
+                          } catch (taskError) {
+                            const message = taskError instanceof Error ? taskError.message : String(taskError);
+                            setError(message);
+                            setBusy(false);
+                            return;
+                          } finally {
+                            setBusy(false);
+                          }
+
+                          setTranscribingAfterStop(true);
+                          try {
+                            await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
+                            await reloadBootstrap(true);
+                            await loadEntryBundle(activeEntry.id);
+                            setNotice("Recording stopped and transcribed");
+                          } catch (taskError) {
+                            const message = taskError instanceof Error ? taskError.message : String(taskError);
+                            setNotice(null);
+                            setError(message);
+                          } finally {
+                            setTranscribingAfterStop(false);
+                          }
+                        }}
+                      >
+                        Stop Recording
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                <div className="action-row post-actions">
+                  <button
+                    disabled={!canRunPostRecordingActions || busy}
+                    onClick={() =>
+                      runTask(
+                        async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
+                        "Transcription ready"
+                      )
+                    }
+                  >
+                    Transcribe
+                  </button>
+                  <button
+                    disabled={!canRunPostRecordingActions || busy}
+                    onClick={() =>
+                      runTask(
+                        async () => api.generateArtifact(activeEntry.id, "summary"),
+                        "Summarize completed"
+                      )
+                    }
+                  >
+                    Summarize
+                  </button>
+                  <button
+                    disabled={!canRunPostRecordingActions || busy}
+                    onClick={() =>
+                      runTask(
+                        async () => api.generateArtifact(activeEntry.id, "analysis"),
+                        "Analyze completed"
+                      )
+                    }
+                  >
+                    Analyze
+                  </button>
+                  <div className="inline-select-action">
+                    <select
+                      value={critiqueType}
+                      onChange={(event) => setCritiqueType(event.target.value as ArtifactType)}
+                      disabled={!canRunPostRecordingActions || busy}
+                    >
+                      {CRITIQUE_ACTIONS.map((item) => (
+                        <option key={item.type} value={item.type}>
+                          {item.label}
                         </option>
                       ))}
                     </select>
                     <button
-                      className="icon-only"
-                      title="Remove source"
-                      aria-label="Remove source"
-                      disabled={busy || sources.length <= 1}
-                      onClick={() => setSources(sources.filter((_, i) => i !== index))}
+                      disabled={!canRunPostRecordingActions || busy}
+                      onClick={() =>
+                        runTask(
+                          async () => api.generateArtifact(activeEntry.id, critiqueType),
+                          `${artifactLabel(critiqueType)} completed`
+                        )
+                      }
                     >
-                      <Icon name="remove" />
+                      Critique
                     </button>
                   </div>
-                ))}
-                <button
-                  className="icon-only"
-                  title="Add source"
-                  aria-label="Add source"
-                  disabled={busy || recordingDevices.length === 0}
-                  onClick={() => {
-                    const used = new Set(sources.map((source) => sourceKey(source)));
-                    const candidate =
-                      recordingDevices.find(
-                        (device) => device.is_loopback && !used.has(deviceKey(device))
-                      ) ??
-                      recordingDevices.find((device) => !used.has(deviceKey(device))) ??
-                      recordingDevices[0];
-                    if (!candidate) {
-                      return;
-                    }
-                    setSources([...sources, sourceFromDevice(candidate)]);
-                  }}
-                >
-                  <Icon name="entry-plus" />
-                </button>
-              </div>
-
-              <div className="recording-controls">
-                {!recordingSessionId ? (
                   <button
-                    className="record-button"
-                    title="Start recording"
-                    aria-label="Start recording"
-                    disabled={busy || transcribingAfterStop || sources.length === 0}
+                    disabled={!canRunPostRecordingActions || busy}
                     onClick={() => {
                       runTask(async () => {
-                        const sessionId = await api.startRecording(activeEntry.id, sources);
-                        setRecordingSessionId(sessionId);
-                        setRecordingPaused(false);
-                      }, "Recording started");
+                        const path = await api.exportEntry(activeEntry.id);
+                        setNotice(`Export created at ${path}`);
+                      });
                     }}
                   >
-                    <span className="record-dot" />
+                    Export
                   </button>
-                ) : (
-                  <>
-                    {!recordingPaused ? (
-                      <button
-                        disabled={busy || transcribingAfterStop}
-                        onClick={() => {
-                          if (!recordingSessionId) {
-                            return;
-                          }
-                          runTask(
-                            async () => {
-                              await api.setRecordingPaused(recordingSessionId, true);
-                              setRecordingPaused(true);
-                            },
-                            "Recording paused"
-                          );
-                        }}
-                      >
-                        Pause
-                      </button>
-                    ) : (
-                      <button
-                        disabled={busy || transcribingAfterStop}
-                        onClick={() => {
-                          if (!recordingSessionId) {
-                            return;
-                          }
-                          runTask(
-                            async () => {
-                              await api.setRecordingPaused(recordingSessionId, false);
-                              setRecordingPaused(false);
-                            },
-                            "Recording resumed"
-                          );
-                        }}
-                      >
-                        Resume
-                      </button>
-                    )}
-                    <button
-                      disabled={busy || transcribingAfterStop}
-                      onClick={async () => {
-                        if (!recordingSessionId) {
-                          return;
-                        }
-                        const sessionId = recordingSessionId;
-                        setBusy(true);
-                        setError(null);
-                        setNotice(null);
-                        try {
-                          await api.stopRecording(sessionId);
-                          setRecordingSessionId(null);
-                          setRecordingPaused(false);
-                          await reloadBootstrap(true);
-                          setNotice("Recording stopped. Transcribing...");
-                        } catch (taskError) {
-                          const message = taskError instanceof Error ? taskError.message : String(taskError);
-                          setError(message);
-                          setBusy(false);
-                          return;
-                        } finally {
-                          setBusy(false);
-                        }
-
-                        setTranscribingAfterStop(true);
-                        try {
-                          await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
-                          await reloadBootstrap(true);
-                          await loadEntryBundle(activeEntry.id);
-                          setNotice("Recording stopped and transcribed");
-                        } catch (taskError) {
-                          const message = taskError instanceof Error ? taskError.message : String(taskError);
-                          setNotice(null);
-                          setError(message);
-                        } finally {
-                          setTranscribingAfterStop(false);
-                        }
-                      }}
-                    >
-                      Stop Recording
-                    </button>
-                  </>
-                )}
+                </div>
               </div>
 
               {(recordingSessionId || transcribingAfterStop) && (
@@ -1145,77 +1235,6 @@ export default function App() {
                   )}
                 </div>
               )}
-
-              <div className="action-row post-actions">
-                <button
-                  disabled={!canRunPostRecordingActions || busy}
-                  onClick={() =>
-                    runTask(
-                      async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
-                      "Transcription ready"
-                    )
-                  }
-                >
-                  Transcribe
-                </button>
-                <button
-                  disabled={!canRunPostRecordingActions || busy}
-                  onClick={() =>
-                    runTask(
-                      async () => api.generateArtifact(activeEntry.id, "summary"),
-                      "Summarize completed"
-                    )
-                  }
-                >
-                  Summarize
-                </button>
-                <button
-                  disabled={!canRunPostRecordingActions || busy}
-                  onClick={() =>
-                    runTask(
-                      async () => api.generateArtifact(activeEntry.id, "analysis"),
-                      "Analyze completed"
-                    )
-                  }
-                >
-                  Analyze
-                </button>
-                <div className="inline-select-action">
-                  <select
-                    value={critiqueType}
-                    onChange={(event) => setCritiqueType(event.target.value as ArtifactType)}
-                    disabled={!canRunPostRecordingActions || busy}
-                  >
-                    {CRITIQUE_ACTIONS.map((item) => (
-                      <option key={item.type} value={item.type}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    disabled={!canRunPostRecordingActions || busy}
-                    onClick={() =>
-                      runTask(
-                        async () => api.generateArtifact(activeEntry.id, critiqueType),
-                        `${artifactLabel(critiqueType)} completed`
-                      )
-                    }
-                  >
-                    Critique
-                  </button>
-                </div>
-                <button
-                  disabled={!canRunPostRecordingActions || busy}
-                  onClick={() => {
-                    runTask(async () => {
-                      const path = await api.exportEntry(activeEntry.id);
-                      setNotice(`Export created at ${path}`);
-                    });
-                  }}
-                >
-                  Export
-                </button>
-              </div>
 
               <h3>Transcript</h3>
               <label>

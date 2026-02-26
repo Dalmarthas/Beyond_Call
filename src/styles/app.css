@@ -68,7 +68,7 @@ textarea {
 
 .layout-grid {
   display: grid;
-  grid-template-columns: 280px 360px minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   gap: 12px;
   margin-top: 12px;
 }
@@ -84,8 +84,7 @@ textarea {
   margin-top: 12px;
 }
 
-.side-panel,
-.entry-panel,
+.workspace-panel,
 .detail-panel {
   min-height: 530px;
 }
@@ -116,8 +115,11 @@ p {
   border: 1px solid transparent;
   background: transparent;
   border-radius: 8px;
-  padding: 4px 6px;
+  padding: 5px 6px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .tree-node.active {
@@ -125,38 +127,22 @@ p {
   background: #f0f6ff;
 }
 
-.entry-row {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-  margin-bottom: 8px;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+.tree-node.entry {
+  color: #1d3557;
+  margin-left: 14px;
 }
 
-.entry-row.active {
-  border-color: #acc9ff;
-  background: #f3f8ff;
-}
-
-.entry-select {
-  border: 0;
-  background: transparent;
-  text-align: left;
-  flex: 1;
-  cursor: pointer;
-}
-
-.entry-select small {
-  color: var(--muted);
-  display: block;
-}
-
-.entry-actions {
-  display: flex;
+.node-icon {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+}
+
+.node-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
 button {
@@ -202,7 +188,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 0;
 }
 
 .record-button {
@@ -232,9 +218,9 @@ button:disabled {
 }
 
 .post-actions {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .inline-select-action {
@@ -244,9 +230,16 @@ button:disabled {
 }
 
 .source-controls {
-  margin-top: 10px;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.source-icon-row {
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
 
@@ -254,6 +247,18 @@ button:disabled {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+}
+
+.source-row select {
+  min-width: 0;
+}
+
+.record-action-row {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 input,
