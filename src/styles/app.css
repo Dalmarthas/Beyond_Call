@@ -40,8 +40,14 @@ textarea {
 .app-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .app-header h1 {
@@ -49,28 +55,20 @@ textarea {
   font-size: 24px;
 }
 
-.header-actions {
+.header-icon-actions,
+.icon-button-group {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
   align-items: center;
-}
-
-.header-action-group {
-  display: flex;
   gap: 6px;
-  align-items: center;
 }
 
-.header-action-group input {
-  min-width: 180px;
-  max-width: 220px;
-  padding: 6px 8px;
+.panel-name-input {
+  margin-bottom: 8px;
 }
 
 .layout-grid {
   display: grid;
-  grid-template-columns: 280px 360px minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   gap: 12px;
   margin-top: 12px;
 }
@@ -82,10 +80,21 @@ textarea {
   padding: 12px;
 }
 
-.side-panel,
-.entry-panel,
+.flyout-panel {
+  margin-top: 12px;
+}
+
+.workspace-panel,
 .detail-panel {
   min-height: 530px;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 h2,
@@ -106,8 +115,11 @@ p {
   border: 1px solid transparent;
   background: transparent;
   border-radius: 8px;
-  padding: 4px 6px;
+  padding: 5px 6px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .tree-node.active {
@@ -115,45 +127,22 @@ p {
   background: #f0f6ff;
 }
 
-.stack-actions {
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.tree-node.entry {
+  color: #1d3557;
+  margin-left: 14px;
 }
 
-.entry-row {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-  margin-bottom: 8px;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+.node-icon {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.entry-row.active {
-  border-color: #acc9ff;
-  background: #f3f8ff;
-}
-
-.entry-select {
-  border: 0;
-  background: transparent;
-  text-align: left;
-  flex: 1;
-  cursor: pointer;
-}
-
-.entry-select small {
-  color: var(--muted);
-  display: block;
-}
-
-.entry-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.node-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
 button {
@@ -165,8 +154,60 @@ button {
 }
 
 button:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: default;
+}
+
+.icon-only {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+}
+
+.icon-only.small {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.icon-only.active {
+  background: #e6f2ff;
+  border-color: #9fc2ff;
+}
+
+.icon-only svg {
+  width: 18px;
+  height: 18px;
+}
+
+.recording-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.record-button {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #f2a8b1;
+  background: #ffe9ec;
+}
+
+.record-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #d92339;
 }
 
 .action-row {
@@ -176,11 +217,48 @@ button:disabled {
   gap: 8px;
 }
 
+.post-actions {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.inline-select-action {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.source-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.source-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .source-row {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
-  margin-bottom: 8px;
+}
+
+.source-row select {
+  min-width: 0;
+}
+
+.record-action-row {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 input,
@@ -206,26 +284,10 @@ textarea {
   font-size: 12px;
 }
 
-.hint-box {
-  margin: 8px 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.hint-box code {
-  background: #f3f6fa;
-  border-radius: 6px;
-  padding: 5px 7px;
-  white-space: pre-wrap;
-}
-
 .status {
   border-radius: 8px;
   padding: 8px 10px;
+  margin-top: 10px;
 }
 
 .status.error {
@@ -292,10 +354,6 @@ textarea {
   border: 1px dashed var(--line);
   border-radius: 10px;
   padding: 8px;
-}
-
-.settings-panel {
-  margin-top: 12px;
 }
 
 .trash-grid {

@@ -897,14 +897,157 @@ fn parse_openai_whisper_detected_language(output_text: &str) -> Option<String> {
     None
 }
 
+fn ollama_client(timeout_seconds: u64) -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(timeout_seconds))
+        .build()
+        .map_err(|e| format!("Failed to initialize Ollama HTTP client: {e}"))
+}
+
+fn ollama_reachable(timeout_seconds: u64) -> bool {
+    let Ok(client) = ollama_client(timeout_seconds) else {
+        return false;
+    };
+    let Ok(response) = client.get("http://127.0.0.1:11434/api/tags").send() else {
+        return false;
+    };
+    response.status().is_success()
+}
+
+fn start_ollama_server() -> Result<(), String> {
+    if !find_executable("ollama") {
+        return Err("Ollama executable not found in PATH. Install Ollama first.".to_string());
+    }
+
+    Command::new("ollama")
+        .arg("serve")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start Ollama automatically: {e}"))?;
+
+    for _ in 0..24 {
+        if ollama_reachable(1) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    Err("Ollama did not become ready on http://127.0.0.1:11434.".to_string())
+}
+
+fn ollama_tags() -> Result<serde_json::Value, String> {
+    let client = ollama_client(8)?;
+    let response = client
+        .get("http://127.0.0.1:11434/api/tags")
+        .send()
+        .map_err(|e| format!("Failed to query Ollama models: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Ollama tags request failed with status {}", response.status()));
+    }
+
+    response
+        .json()
+        .map_err(|e| format!("Failed to parse Ollama tags response: {e}"))
+}
+
+fn ollama_model_exists(target_model: &str) -> Result<bool, String> {
+    let body = ollama_tags()?;
+    let normalized_target = target_model.trim();
+    if normalized_target.is_empty() {
+        return Ok(false);
+    }
+
+    let models = body
+        .get("models")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    for model in models {
+        let Some(name) = model.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if name == normalized_target {
+            return Ok(true);
+        }
+        if let Some((base, _)) = name.split_once(':') {
+            if base == normalized_target {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn warmup_ollama_model(model_name: &str) -> Result<(), String> {
+    let client = ollama_client(120)?;
+    let response = client
+        .post("http://127.0.0.1:11434/api/generate")
+        .json(&json!({
+            "model": model_name,
+            "prompt": "Reply only with OK",
+            "stream": false,
+            "think": false,
+            "options": { "num_predict": 2 }
+        }))
+        .send()
+        .map_err(|e| format!("Failed to warm up Ollama model `{model_name}`: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Warm-up call failed for model `{model_name}` with status {}",
+            response.status()
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_ollama_ready(model_name: &str, warmup: bool) -> Result<String, String> {
+    if !ollama_reachable(2) {
+        start_ollama_server()?;
+    }
+
+    if !ollama_model_exists(model_name)? {
+        Command::new("ollama")
+            .arg("pull")
+            .arg(model_name)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to start background model download for `{model_name}`: {e}"))?;
+        return Ok(format!(
+            "Model `{model_name}` is downloading in background. Summarize/Analyze/Critique will work when download completes."
+        ));
+    }
+
+    if warmup {
+        let model = model_name.to_string();
+        thread::spawn(move || {
+            let _ = warmup_ollama_model(&model);
+        });
+    }
+
+    Ok("ready".to_string())
+}
+
 fn call_ollama(model_name: &str, prompt: &str) -> Result<String, String> {
-    let client = Client::new();
+    let readiness = ensure_ollama_ready(model_name, false)?;
+    if readiness != "ready" {
+        return Err(readiness);
+    }
+
+    let client = ollama_client(240)?;
     let response = client
         .post("http://127.0.0.1:11434/api/generate")
         .json(&json!({
             "model": model_name,
             "prompt": prompt,
-            "stream": false
+            "stream": false,
+            "think": false
         }))
         .send()
         .map_err(|e| {
@@ -2054,10 +2197,25 @@ fn generate_artifact(entry_id: String, artifact_type: String, state: State<'_, A
 
     let prompt_template = prompt_for_role(&conn, &artifact_type)?;
     let model = model_name(&conn)?;
+    let artifact_name = match artifact_type.as_str() {
+        "summary" => "summary",
+        "analysis" => "analysis",
+        "critique_recruitment" => "recruitment critique",
+        "critique_sales" => "sales critique",
+        "critique_cs" => "customer success critique",
+        _ => "artifact",
+    };
 
     let full_prompt = format!(
-        "{}\n\nTranscript (language={}):\n{}\n\nReturn markdown only.",
-        prompt_template, transcript.language, transcript.text
+        "You are generating a {artifact_name} from a call transcript.\n\
+INSTRUCTIONS (internal, do not repeat or quote):\n{prompt_template}\n\n\
+OUTPUT RULES:\n\
+- Return markdown only.\n\
+- Do not include meta text about your instructions.\n\
+- Do not copy instruction headings or labels unless they appear in the transcript itself.\n\
+- Base the result only on transcript content.\n\n\
+Transcript (language={}):\n{}\n",
+        transcript.language, transcript.text
     );
 
     let response_text = call_ollama(&model, &full_prompt)?;
@@ -2184,6 +2342,19 @@ fn update_model_name(model_name: String, state: State<'_, AppState>) -> Result<(
     .map_err(|e| format!("Failed to update model name: {e}"))?;
 
     Ok(())
+}
+
+#[tauri::command]
+fn prepare_ai_backend(state: State<'_, AppState>) -> Result<String, String> {
+    let db = db_path(&state)?;
+    let conn = connection(&db)?;
+    let model = model_name(&conn)?;
+    let readiness = ensure_ollama_ready(&model, true)?;
+    if readiness == "ready" {
+        Ok(format!("AI backend ready ({model})"))
+    } else {
+        Ok(readiness)
+    }
 }
 
 #[tauri::command]
@@ -2404,6 +2575,7 @@ pub fn run() {
             update_artifact,
             update_prompt_template,
             update_model_name,
+            prepare_ai_backend,
             list_whisper_models,
             update_whisper_model,
             export_entry_markdown

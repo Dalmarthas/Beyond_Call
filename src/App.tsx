@@ -18,6 +18,10 @@ const CRITIQUE_ROLES: { role: PromptRole; label: string }[] = [
   { role: "critique_sales", label: "Sales Critique Prompt" },
   { role: "critique_cs", label: "Customer Success Critique Prompt" }
 ];
+const SUMMARY_PROMPT: { role: PromptRole; label: string } = {
+  role: "summary",
+  label: "Summary Prompt"
+};
 
 const ARTIFACT_TYPES: { type: ArtifactType; label: string }[] = [
   { type: "summary", label: "Summarize" },
@@ -56,6 +60,90 @@ const WHISPER_MODEL_PRESETS: string[] = [
   "ggml-tiny.en.bin"
 ];
 
+const CRITIQUE_ACTIONS: { type: ArtifactType; label: string }[] = [
+  { type: "critique_recruitment", label: "Recruitment" },
+  { type: "critique_sales", label: "Sales" },
+  { type: "critique_cs", label: "Customer Success" }
+];
+
+type IconName =
+  | "folder-plus"
+  | "entry-plus"
+  | "edit"
+  | "trash"
+  | "settings"
+  | "refresh"
+  | "remove"
+  | "folder"
+  | "entry";
+
+function Icon({ name }: { name: IconName }) {
+  switch (name) {
+    case "folder-plus":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 7h7l2 2h9v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M12 12v5M9.5 14.5h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "entry-plus":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M14 3v4h4" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M12 11v6M9 14h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "folder":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 7h7l2 2h9v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+      );
+    case "entry":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M14 3v4h4" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+      );
+    case "edit":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 20l4.5-1 10-10a1.8 1.8 0 0 0 0-2.5l-1-1a1.8 1.8 0 0 0-2.5 0l-10 10L4 20z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+          <path d="M13.5 7.5l3 3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "trash":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          <path d="M10 11v6M14 11v6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "settings":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M10.3 3.8h3.4l.5 2.1c.4.1.8.3 1.2.5l1.9-1.1 2.4 2.4-1.1 1.9c.2.4.4.8.5 1.2l2.1.5v3.4l-2.1.5c-.1.4-.3.8-.5 1.2l1.1 1.9-2.4 2.4-1.9-1.1c-.4.2-.8.4-1.2.5l-.5 2.1h-3.4l-.5-2.1c-.4-.1-.8-.3-1.2-.5l-1.9 1.1-2.4-2.4 1.1-1.9c-.2-.4-.4-.8-.5-1.2l-2.1-.5v-3.4l2.1-.5c.1-.4.3-.8.5-1.2l-1.1-1.9 2.4-2.4 1.9 1.1c.4-.2.8-.4 1.2-.5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+          <circle cx="12" cy="12" r="2.8" fill="none" stroke="currentColor" strokeWidth="1.7" />
+        </svg>
+      );
+    case "refresh":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M19 8a8 8 0 1 0 2 5.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          <path d="M19 3v5h-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    default:
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+  }
+}
+
 function latestByType(revisions: ArtifactRevision[], type: ArtifactType) {
   return revisions
     .filter((item) => item.artifact_type === type)
@@ -80,6 +168,21 @@ function buildTree(folders: Folder[]) {
 
 function formatDate(ts: string) {
   return new Date(ts).toLocaleString();
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      });
+  });
 }
 
 export default function App() {
@@ -108,9 +211,10 @@ export default function App() {
   const [modelName, setModelName] = useState<string>("qwen3:8b");
   const [whisperModel, setWhisperModel] = useState<string>("turbo");
   const [whisperModelOptions, setWhisperModelOptions] = useState<string[]>(WHISPER_MODEL_PRESETS);
-  const [newRootFolderName, setNewRootFolderName] = useState("");
-  const [newSubfolderName, setNewSubfolderName] = useState("");
-  const [newEntryTitle, setNewEntryTitle] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  const [critiqueType, setCritiqueType] = useState<ArtifactType>("critique_recruitment");
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -128,14 +232,18 @@ export default function App() {
     return bootstrap.entries.find((entry) => entry.id === selectedEntryId) ?? null;
   }, [bootstrap, selectedEntryId]);
 
-  const activeEntries = useMemo(() => {
-    if (!bootstrap || !selectedFolderId) {
-      return [];
-    }
-    return bootstrap.entries
-      .filter((entry) => entry.folder_id === selectedFolderId && !entry.deleted_at)
+  const entriesByFolder = useMemo(() => {
+    const map = new Map<string, Entry[]>();
+    const entries = (bootstrap?.entries ?? [])
+      .filter((entry) => !entry.deleted_at)
       .sort((a, b) => b.created_at.localeCompare(a.created_at));
-  }, [bootstrap, selectedFolderId]);
+    for (const entry of entries) {
+      const current = map.get(entry.folder_id) ?? [];
+      current.push(entry);
+      map.set(entry.folder_id, current);
+    }
+    return map;
+  }, [bootstrap?.entries]);
 
   const trashedFolders = useMemo(
     () => bootstrap?.folders.filter((folder) => folder.deleted_at) ?? [],
@@ -145,22 +253,17 @@ export default function App() {
     () => bootstrap?.entries.filter((entry) => entry.deleted_at) ?? [],
     [bootstrap]
   );
-  const hasLoopbackDevice = useMemo(
-    () => recordingDevices.some((device) => device.is_loopback),
-    [recordingDevices]
+  const canRunPostRecordingActions = useMemo(
+    () => Boolean(activeEntry?.recording_path) && !recordingSessionId && !transcribingAfterStop,
+    [activeEntry?.recording_path, recordingSessionId, transcribingAfterStop]
   );
-  const selectedLoopbackOnly = useMemo(() => {
-    if (sources.length === 0) {
-      return false;
-    }
-    return sources.every((source) => {
-      const device = recordingDevices.find((item) => deviceKey(item) === sourceKey(source));
-      return Boolean(device?.is_loopback);
-    });
-  }, [recordingDevices, sources]);
-  const selectedNativeSystemSource = useMemo(
-    () => sources.some((source) => source.format === "screencapturekit"),
-    [sources]
+  const visibleArtifactTypes = useMemo(
+    () =>
+      ARTIFACT_TYPES.filter((item) => {
+        const latestArtifact = entryBundle ? latestByType(entryBundle.artifact_revisions, item.type) : undefined;
+        return Boolean(latestArtifact || artifactDrafts[item.type].trim().length > 0);
+      }),
+    [artifactDrafts, entryBundle]
   );
   const whisperModelChoices = useMemo(
     () =>
@@ -283,6 +386,20 @@ export default function App() {
       try {
         await reloadBootstrap(false);
         await loadRecordingDevices(true);
+        void api
+          .prepareAiBackend()
+          .then((message) => {
+            if (
+              message &&
+              !message.toLowerCase().startsWith("ai backend ready")
+            ) {
+              setNotice(message);
+            }
+          })
+          .catch((taskError) => {
+            const message = taskError instanceof Error ? taskError.message : String(taskError);
+            setNotice(`AI backend is not ready yet: ${message}`);
+          });
       } catch (taskError) {
         const message = taskError instanceof Error ? taskError.message : String(taskError);
         setError(message);
@@ -353,6 +470,10 @@ export default function App() {
   }, [entryBundle]);
 
   async function onSelectEntry(entryId: string) {
+    const entry = bootstrap?.entries.find((item) => item.id === entryId);
+    if (entry) {
+      setSelectedFolderId(entry.folder_id);
+    }
     setSelectedEntryId(entryId);
     setBusy(true);
     setError(null);
@@ -377,9 +498,27 @@ export default function App() {
             setEntryBundle(null);
           }}
         >
-          {folder.name}
+          <span className="node-icon">
+            <Icon name="folder" />
+          </span>
+          <span>{folder.name}</span>
         </button>
-        <ul className="tree-list">{renderFolderNodes(folder.id)}</ul>
+        <ul className="tree-list">
+          {(entriesByFolder.get(folder.id) ?? []).map((entry) => (
+            <li key={entry.id}>
+              <button
+                className={selectedEntryId === entry.id ? "tree-node entry active" : "tree-node entry"}
+                onClick={() => void onSelectEntry(entry.id)}
+              >
+                <span className="node-icon">
+                  <Icon name="entry" />
+                </span>
+                <span>{entry.title}</span>
+              </button>
+            </li>
+          ))}
+          {renderFolderNodes(folder.id)}
+        </ul>
       </li>
     ));
   }
@@ -440,7 +579,11 @@ export default function App() {
   }
 
   async function loadRecordingDevices(applyStartupDefaults = false) {
-    const devices = await api.listRecordingDevices();
+    const devices = await withTimeout(
+      api.listRecordingDevices(),
+      10000,
+      "Audio device detection timed out. You can still use the app and retry refresh."
+    );
     setRecordingDevices(devices);
     if (devices.length === 0) {
       return;
@@ -470,163 +613,334 @@ export default function App() {
     });
   }
 
+  function artifactLabel(type: ArtifactType) {
+    return ARTIFACT_TYPES.find((item) => item.type === type)?.label ?? type;
+  }
+
+  function createFolderFromCurrentSelection() {
+    const fallback = selectedFolderId ? defaultLabel("Subfolder") : defaultLabel("Folder");
+    const name = workspaceNameDraft.trim() || fallback;
+    runTask(async () => {
+      await api.createFolder(name, selectedFolderId);
+      setWorkspaceNameDraft("");
+    }, "Folder created");
+  }
+
+  function createEntryForSelectedFolder() {
+    if (!selectedFolderId) {
+      setError("Select a folder first");
+      return;
+    }
+    const title = workspaceNameDraft.trim() || defaultLabel("Entry");
+    runTask(async () => {
+      await api.createEntry(selectedFolderId, title);
+      setWorkspaceNameDraft("");
+    }, "Entry created");
+  }
+
+  function renameSelectedEntity() {
+    const name = workspaceNameDraft.trim();
+    if (!name) {
+      setError("Type a new name first, then press rename.");
+      return;
+    }
+    if (selectedEntryId) {
+      runTask(async () => {
+        await api.renameEntry(selectedEntryId, name);
+        setWorkspaceNameDraft("");
+      }, "Entry renamed");
+      return;
+    }
+    if (selectedFolderId) {
+      runTask(async () => {
+        await api.renameFolder(selectedFolderId, name);
+        setWorkspaceNameDraft("");
+      }, "Folder renamed");
+      return;
+    }
+    setError("Select a folder or entry first.");
+  }
+
+  function moveSelectedEntityToTrash() {
+    if (selectedEntryId) {
+      runTask(async () => {
+        await api.moveToTrash("entry", selectedEntryId);
+        setSelectedEntryId(null);
+        setEntryBundle(null);
+      }, "Entry moved to trash");
+      return;
+    }
+    if (selectedFolderId) {
+      runTask(async () => {
+        await api.moveToTrash("folder", selectedFolderId);
+        setSelectedFolderId(null);
+      }, "Folder moved to trash");
+      return;
+    }
+    setError("Select a folder or entry first.");
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
-        <h1>AI Call Recorder Local</h1>
-        <div className="header-actions">
-          <div className="header-action-group">
-            <input
-              value={newRootFolderName}
-              onChange={(event) => setNewRootFolderName(event.target.value)}
-              placeholder="Root folder name (optional)"
-              disabled={busy}
-            />
+        <div className="header-title-row">
+          <h1>AI Call Recorder Local</h1>
+          <div className="header-icon-actions">
             <button
+              className={showSettings ? "icon-only active" : "icon-only"}
+              title="Settings"
+              aria-label="Settings"
               onClick={() => {
-                const name = newRootFolderName.trim() || defaultLabel("Root Folder");
-                runTask(async () => {
-                  await api.createFolder(name, null);
-                  setNewRootFolderName("");
-                }, "Root folder created");
+                setShowSettings((current) => !current);
+                setShowTrash(false);
               }}
-              disabled={busy}
             >
-              + Root Folder
+              <Icon name="settings" />
             </button>
-          </div>
-          <div className="header-action-group">
-            <input
-              value={newSubfolderName}
-              onChange={(event) => setNewSubfolderName(event.target.value)}
-              placeholder="Subfolder name (optional)"
-              disabled={busy || !selectedFolderId}
-            />
             <button
+              className={showTrash ? "icon-only active" : "icon-only"}
+              title="Trash"
+              aria-label="Trash"
               onClick={() => {
-                if (!selectedFolderId) {
-                  setError("Select a folder first");
-                  return;
-                }
-                const name = newSubfolderName.trim() || defaultLabel("Subfolder");
-                runTask(async () => {
-                  await api.createFolder(name, selectedFolderId);
-                  setNewSubfolderName("");
-                }, "Subfolder created");
+                setShowTrash((current) => !current);
+                setShowSettings(false);
               }}
-              disabled={busy || !selectedFolderId}
             >
-              + Subfolder
-            </button>
-          </div>
-          <div className="header-action-group">
-            <input
-              value={newEntryTitle}
-              onChange={(event) => setNewEntryTitle(event.target.value)}
-              placeholder="Entry title (optional)"
-              disabled={busy || !selectedFolderId}
-            />
-            <button
-              onClick={() => {
-                if (!selectedFolderId) {
-                  setError("Select a folder first");
-                  return;
-                }
-                const title = newEntryTitle.trim() || defaultLabel("Entry");
-                runTask(async () => {
-                  await api.createEntry(selectedFolderId, title);
-                  setNewEntryTitle("");
-                }, "Entry created");
-              }}
-              disabled={busy || !selectedFolderId}
-            >
-              + Entry
+              <Icon name="trash" />
             </button>
           </div>
         </div>
       </header>
 
+      {showSettings && (
+        <section className="card flyout-panel">
+          <div className="panel-heading">
+            <h2>Local Model & Prompt Settings</h2>
+            <button
+              className="icon-only"
+              aria-label="Close settings"
+              title="Close settings"
+              onClick={() => setShowSettings(false)}
+            >
+              <Icon name="remove" />
+            </button>
+          </div>
+          <label>
+            Ollama Model Name
+            <input value={modelName} onChange={(event) => setModelName(event.target.value)} />
+          </label>
+          <button
+            disabled={busy}
+            onClick={() => runTask(async () => api.updateModelName(modelName), "Model name updated")}
+          >
+            Save Model
+          </button>
+          <label>
+            Whisper Model
+            <select
+              value={whisperModel}
+              onChange={(event) => setWhisperModel(event.target.value)}
+            >
+              {whisperModelChoices.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Custom Whisper Model (optional)
+            <input
+              value={whisperModel}
+              onChange={(event) => setWhisperModel(event.target.value)}
+              placeholder="turbo | large-v3 | ggml-base.bin | /path/to/model.bin"
+            />
+          </label>
+          <div className="action-row">
+            <button
+              disabled={busy}
+              onClick={() =>
+                runTask(async () => api.updateWhisperModel(whisperModel), "Whisper model updated")
+              }
+            >
+              Save Whisper Model
+            </button>
+            <button
+              disabled={busy}
+              onClick={() =>
+                runTask(async () => {
+                  const models = await api.listWhisperModels();
+                  setWhisperModelOptions(Array.from(new Set([whisperModel, ...models])));
+                }, "Whisper models refreshed")
+              }
+            >
+              Refresh Whisper Models
+            </button>
+          </div>
+          <p className="help-text">
+            Use <code>turbo</code>/<code>large-v3</code> with OpenAI Whisper CLI (<code>whisper</code>), or
+            use local <code>ggml-*.bin</code> models with <code>whisper-cli</code>.
+          </p>
+
+          <div className="artifact-block">
+            <p>
+              <strong>{SUMMARY_PROMPT.label}</strong>
+            </p>
+            <textarea
+              className="medium-text"
+              value={promptDrafts[SUMMARY_PROMPT.role]}
+              onChange={(event) =>
+                setPromptDrafts({ ...promptDrafts, [SUMMARY_PROMPT.role]: event.target.value })
+              }
+            />
+            <button
+              disabled={busy}
+              onClick={() =>
+                runTask(
+                  async () => api.updatePrompt(SUMMARY_PROMPT.role, promptDrafts[SUMMARY_PROMPT.role]),
+                  `${SUMMARY_PROMPT.label} updated`
+                )
+              }
+            >
+              Save {SUMMARY_PROMPT.label}
+            </button>
+          </div>
+
+          {CRITIQUE_ROLES.map((item) => (
+            <div key={item.role} className="artifact-block">
+              <p>
+                <strong>{item.label}</strong>
+              </p>
+              <textarea
+                className="medium-text"
+                value={promptDrafts[item.role]}
+                onChange={(event) =>
+                  setPromptDrafts({ ...promptDrafts, [item.role]: event.target.value })
+                }
+              />
+              <button
+                disabled={busy}
+                onClick={() =>
+                  runTask(
+                    async () => api.updatePrompt(item.role, promptDrafts[item.role]),
+                    `${item.label} updated`
+                  )
+                }
+              >
+                Save Prompt
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {showTrash && (
+        <section className="card flyout-panel">
+          <div className="panel-heading">
+            <h2>Trash</h2>
+            <button
+              className="icon-only"
+              aria-label="Close trash"
+              title="Close trash"
+              onClick={() => setShowTrash(false)}
+            >
+              <Icon name="remove" />
+            </button>
+          </div>
+          <div className="trash-grid">
+            <div>
+              <h3>Folders</h3>
+              {trashedFolders.map((folder) => (
+                <div key={folder.id} className="trash-row">
+                  <span>{folder.name}</span>
+                  <button onClick={() => runTask(async () => api.restoreFromTrash("folder", folder.id))}>
+                    Restore
+                  </button>
+                  <button onClick={() => runTask(async () => api.purgeEntity("folder", folder.id))}>
+                    Purge
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div>
+              <h3>Entries</h3>
+              {trashedEntries.map((entry) => (
+                <div key={entry.id} className="trash-row">
+                  <span>{entry.title}</span>
+                  <button onClick={() => runTask(async () => api.restoreFromTrash("entry", entry.id))}>
+                    Restore
+                  </button>
+                  <button onClick={() => runTask(async () => api.purgeEntity("entry", entry.id))}>
+                    Purge
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
       {error && <p className="status error">{error}</p>}
       {notice && <p className="status success">{notice}</p>}
 
       <main className="layout-grid">
-        <aside className="card side-panel">
-          <h2>Folders</h2>
-          <ul className="tree-list">{renderFolderNodes(null)}</ul>
-          <div className="stack-actions">
-            <button
-              disabled={busy || !selectedFolderId}
-              onClick={() => {
-                if (!selectedFolderId) {
-                  return;
-                }
-                const name = window.prompt("Rename folder");
-                if (!name) {
-                  return;
-                }
-                runTask(async () => {
-                  await api.renameFolder(selectedFolderId, name);
-                }, "Folder renamed");
-              }}
-            >
-              Rename Folder
-            </button>
-            <button
-              disabled={busy || !selectedFolderId}
-              onClick={() => {
-                if (!selectedFolderId) {
-                  return;
-                }
-                runTask(async () => {
-                  await api.moveToTrash("folder", selectedFolderId);
-                }, "Folder moved to trash");
-              }}
-            >
-              Move Folder to Trash
-            </button>
-          </div>
-        </aside>
-
-        <section className="card entry-panel">
-          <h2>Entries</h2>
-          {activeEntries.map((entry: Entry) => (
-            <div
-              key={entry.id}
-              className={selectedEntryId === entry.id ? "entry-row active" : "entry-row"}
-            >
-              <button className="entry-select" onClick={() => onSelectEntry(entry.id)}>
-                <strong>{entry.title}</strong>
-                <small>{formatDate(entry.created_at)}</small>
+        <aside className="card workspace-panel">
+          <div className="panel-heading">
+            <h2>Workspace</h2>
+            <div className="icon-button-group">
+              <button
+                className="icon-only"
+                title={selectedFolderId ? "Add subfolder" : "Add folder"}
+                aria-label={selectedFolderId ? "Add subfolder" : "Add folder"}
+                disabled={busy}
+                onClick={createFolderFromCurrentSelection}
+              >
+                <Icon name="folder-plus" />
               </button>
-              <div className="entry-actions">
-                <button
-                  disabled={busy}
-                  onClick={() => {
-                    const title = window.prompt("Rename entry", entry.title);
-                    if (!title) {
-                      return;
-                    }
-                    runTask(async () => {
-                      await api.renameEntry(entry.id, title);
-                    }, "Entry renamed");
-                  }}
-                >
-                  Rename
-                </button>
-                <button
-                  disabled={busy}
-                  onClick={() => {
-                    runTask(async () => {
-                      await api.moveToTrash("entry", entry.id);
-                    }, "Entry moved to trash");
-                  }}
-                >
-                  Trash
-                </button>
-              </div>
+              <button
+                className="icon-only"
+                title="Add entry"
+                aria-label="Add entry"
+                disabled={busy || !selectedFolderId}
+                onClick={createEntryForSelectedFolder}
+              >
+                <Icon name="entry-plus" />
+              </button>
+              <button
+                className="icon-only"
+                title="Rename selected"
+                aria-label="Rename selected"
+                disabled={busy || (!selectedFolderId && !selectedEntryId)}
+                onClick={renameSelectedEntity}
+              >
+                <Icon name="edit" />
+              </button>
+              <button
+                className="icon-only"
+                title="Delete selected"
+                aria-label="Delete selected"
+                disabled={busy || (!selectedFolderId && !selectedEntryId)}
+                onClick={moveSelectedEntityToTrash}
+              >
+                <Icon name="trash" />
+              </button>
             </div>
-          ))}
-        </section>
+          </div>
+          <input
+            value={workspaceNameDraft}
+            onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+            placeholder={
+              selectedEntryId
+                ? "Entry name"
+                : selectedFolderId
+                  ? "Subfolder, entry, or rename"
+                  : "Workspace item name"
+            }
+            disabled={busy}
+            className="panel-name-input"
+          />
+          <ul className="tree-list">{renderFolderNodes(null)}</ul>
+        </aside>
 
         <section className="card detail-panel">
           <h2>Entry Detail</h2>
@@ -650,245 +964,252 @@ export default function App() {
               </p>
               <p>Duration: {activeEntry.duration_sec}s</p>
 
-              <h3>Recording Sources</h3>
-              <p className="help-text">
-                Pick devices by name. On macOS 13+, select "System Audio (macOS Native)" for
-                direct system/call capture. Loopback devices (for example BlackHole) remain as
-                fallback options.
-              </p>
-              <p className="help-text">
-                On macOS 15+, choose "System Audio (macOS Native)" plus one microphone source to
-                capture both system audio and microphone in the same recording.
-              </p>
-              <p className="help-text">
-                macOS loopback setup: 1) Open Audio MIDI Setup. 2) Create a Multi-Output Device
-                with your speakers + BlackHole 2ch. 3) Set your call app output to that
-                Multi-Output device. 4) Keep microphone as a separate source in this app.
-              </p>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  runTask(async () => {
-                    await loadRecordingDevices();
-                  }, "Audio devices refreshed")
-                }
-              >
-                Refresh Audio Devices
-              </button>
-              {!hasLoopbackDevice && recordingDevices.length > 0 && (
-                <p className="help-text">
-                  No loopback/speaker device detected yet. Install and configure BlackHole to record
-                  audio coming from your speakers/call app.
-                </p>
-              )}
-              {recordingDevices.length > 0 && (
-                <div className="hint-box">
-                  <strong>Detected Devices</strong>
-                  {recordingDevices.map((device) => (
-                    <code key={deviceKey(device)}>
-                      {device.name}
-                      {device.is_loopback ? " (Loopback/System)" : ""}
-                    </code>
-                  ))}
-                </div>
-              )}
-              {recordingDevices.length === 0 && (
-                <p className="help-text">
-                  No audio devices detected yet. Click "Refresh Audio Devices".
-                </p>
-              )}
-              {sources.map((source, index) => (
-                <div className="source-row" key={`${source.label}-${index}`}>
-                  <select
-                    value={sourceKey(source)}
-                    onChange={(event) => {
-                      const selected = recordingDevices.find(
-                        (device) => deviceKey(device) === event.target.value
-                      );
-                      if (!selected) {
-                        return;
-                      }
-                      const next = [...sources];
-                      next[index] = sourceFromDevice(selected);
-                      setSources(next);
-                    }}
-                    disabled={busy || recordingDevices.length === 0}
-                  >
-                    {recordingDevices.map((device) => (
-                      <option key={deviceKey(device)} value={deviceKey(device)}>
-                        {device.name}
-                        {device.is_loopback ? " (Loopback/System)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    disabled={busy || sources.length <= 1}
-                    onClick={() => setSources(sources.filter((_, i) => i !== index))}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-              <button
-                disabled={busy || recordingDevices.length === 0}
-                onClick={() => {
-                  const used = new Set(sources.map((source) => sourceKey(source)));
-                  const candidate =
-                    recordingDevices.find(
-                      (device) => device.is_loopback && !used.has(deviceKey(device))
-                    ) ??
-                    recordingDevices.find((device) => !used.has(deviceKey(device))) ??
-                    recordingDevices[0];
-                  if (!candidate) {
-                    return;
-                  }
-                  setSources([...sources, sourceFromDevice(candidate)]);
-                }}
-              >
-                + Add Source
-              </button>
-              {selectedNativeSystemSource && sources.length > 2 && (
-                <p className="help-text">
-                  With "System Audio (macOS Native)", use at most one additional microphone source.
-                </p>
-              )}
-
-              <div className="action-row">
-                {!recordingSessionId ? (
-                  <button
-                    disabled={busy || transcribingAfterStop || sources.length === 0}
-                    onClick={() => {
-                      runTask(async () => {
-                        const sessionId = await api.startRecording(activeEntry.id, sources);
-                        setRecordingSessionId(sessionId);
-                        setRecordingPaused(false);
-                      }, "Recording started");
-                    }}
-                  >
-                    Start Recording
-                  </button>
-                ) : (
-                  <>
-                    {!recordingPaused ? (
-                      <button
-                        disabled={busy || transcribingAfterStop}
-                        onClick={() => {
-                          if (!recordingSessionId) {
-                            return;
-                          }
-                          runTask(
-                            async () => {
-                              await api.setRecordingPaused(recordingSessionId, true);
-                              setRecordingPaused(true);
-                            },
-                            "Recording paused"
-                          );
-                        }}
-                      >
-                        Pause
-                      </button>
-                    ) : (
-                      <button
-                        disabled={busy || transcribingAfterStop}
-                        onClick={() => {
-                          if (!recordingSessionId) {
-                            return;
-                          }
-                          runTask(
-                            async () => {
-                              await api.setRecordingPaused(recordingSessionId, false);
-                              setRecordingPaused(false);
-                            },
-                            "Recording resumed"
-                          );
-                        }}
-                      >
-                        Resume
-                      </button>
-                    )}
+              <div className="source-controls">
+                  <div className="source-icon-row">
                     <button
-                      disabled={busy || transcribingAfterStop}
-                      onClick={async () => {
-                        if (!recordingSessionId) {
+                      className="icon-only"
+                      title="Refresh devices"
+                      aria-label="Refresh devices"
+                      disabled={busy}
+                      onClick={() =>
+                        runTask(async () => {
+                          await loadRecordingDevices();
+                        }, "Audio devices refreshed")
+                      }
+                    >
+                      <Icon name="refresh" />
+                    </button>
+                    <button
+                      className="icon-only"
+                      title="Add source"
+                      aria-label="Add source"
+                      disabled={busy || recordingDevices.length === 0}
+                      onClick={() => {
+                        const used = new Set(sources.map((source) => sourceKey(source)));
+                        const candidate =
+                          recordingDevices.find(
+                            (device) => device.is_loopback && !used.has(deviceKey(device))
+                          ) ??
+                          recordingDevices.find((device) => !used.has(deviceKey(device))) ??
+                          recordingDevices[0];
+                        if (!candidate) {
                           return;
                         }
-                        const sessionId = recordingSessionId;
-                        setBusy(true);
-                        setError(null);
-                        setNotice(null);
-                        try {
-                          await api.stopRecording(sessionId);
-                          setRecordingSessionId(null);
-                          setRecordingPaused(false);
-                          await reloadBootstrap(true);
-                          setNotice("Recording stopped. Transcribing...");
-                        } catch (taskError) {
-                          const message = taskError instanceof Error ? taskError.message : String(taskError);
-                          setError(message);
-                          setBusy(false);
-                          return;
-                        } finally {
-                          setBusy(false);
-                        }
-
-                        setTranscribingAfterStop(true);
-                        try {
-                          await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
-                          await reloadBootstrap(true);
-                          await loadEntryBundle(activeEntry.id);
-                          setNotice("Recording stopped and transcribed");
-                        } catch (taskError) {
-                          const message = taskError instanceof Error ? taskError.message : String(taskError);
-                          setNotice(null);
-                          setError(message);
-                        } finally {
-                          setTranscribingAfterStop(false);
-                        }
+                        setSources([...sources, sourceFromDevice(candidate)]);
                       }}
                     >
-                      Stop Recording
+                      <Icon name="entry-plus" />
                     </button>
-                  </>
-                )}
+                  </div>
+                  {sources.map((source, index) => (
+                    <div className="source-row" key={`${source.label}-${index}`}>
+                      <select
+                        value={sourceKey(source)}
+                        onChange={(event) => {
+                          const selected = recordingDevices.find(
+                            (device) => deviceKey(device) === event.target.value
+                          );
+                          if (!selected) {
+                            return;
+                          }
+                          const next = [...sources];
+                          next[index] = sourceFromDevice(selected);
+                          setSources(next);
+                        }}
+                        disabled={busy || recordingDevices.length === 0}
+                      >
+                        {recordingDevices.map((device) => (
+                          <option key={deviceKey(device)} value={deviceKey(device)}>
+                            {device.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="icon-only"
+                        title="Remove source"
+                        aria-label="Remove source"
+                        disabled={busy || sources.length <= 1}
+                        onClick={() => setSources(sources.filter((_, i) => i !== index))}
+                      >
+                        <Icon name="remove" />
+                      </button>
+                    </div>
+                  ))}
+              </div>
 
-                <button
-                  disabled={busy || transcribingAfterStop}
-                  onClick={() =>
-                    runTask(
-                      async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
-                      "Transcription ready"
-                    )
-                  }
-                >
-                  Transcribe
-                </button>
+              <div className="record-action-row">
+                <div className="recording-controls">
+                  {!recordingSessionId ? (
+                    <button
+                      className="record-button"
+                      title="Start recording"
+                      aria-label="Start recording"
+                      disabled={busy || transcribingAfterStop || sources.length === 0}
+                      onClick={() => {
+                        runTask(async () => {
+                          const sessionId = await api.startRecording(activeEntry.id, sources);
+                          setRecordingSessionId(sessionId);
+                          setRecordingPaused(false);
+                        }, "Recording started");
+                      }}
+                    >
+                      <span className="record-dot" />
+                    </button>
+                  ) : (
+                    <>
+                      {!recordingPaused ? (
+                        <button
+                          disabled={busy || transcribingAfterStop}
+                          onClick={() => {
+                            if (!recordingSessionId) {
+                              return;
+                            }
+                            runTask(
+                              async () => {
+                                await api.setRecordingPaused(recordingSessionId, true);
+                                setRecordingPaused(true);
+                              },
+                              "Recording paused"
+                            );
+                          }}
+                        >
+                          Pause
+                        </button>
+                      ) : (
+                        <button
+                          disabled={busy || transcribingAfterStop}
+                          onClick={() => {
+                            if (!recordingSessionId) {
+                              return;
+                            }
+                            runTask(
+                              async () => {
+                                await api.setRecordingPaused(recordingSessionId, false);
+                                setRecordingPaused(false);
+                              },
+                              "Recording resumed"
+                            );
+                          }}
+                        >
+                          Resume
+                        </button>
+                      )}
+                      <button
+                        disabled={busy || transcribingAfterStop}
+                        onClick={async () => {
+                          if (!recordingSessionId) {
+                            return;
+                          }
+                          const sessionId = recordingSessionId;
+                          setBusy(true);
+                          setError(null);
+                          setNotice(null);
+                          try {
+                            await api.stopRecording(sessionId);
+                            setRecordingSessionId(null);
+                            setRecordingPaused(false);
+                            await reloadBootstrap(true);
+                            setNotice("Recording stopped. Transcribing...");
+                          } catch (taskError) {
+                            const message = taskError instanceof Error ? taskError.message : String(taskError);
+                            setError(message);
+                            setBusy(false);
+                            return;
+                          } finally {
+                            setBusy(false);
+                          }
 
-                {ARTIFACT_TYPES.map((item) => (
+                          setTranscribingAfterStop(true);
+                          try {
+                            await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
+                            await reloadBootstrap(true);
+                            await loadEntryBundle(activeEntry.id);
+                            setNotice("Recording stopped and transcribed");
+                          } catch (taskError) {
+                            const message = taskError instanceof Error ? taskError.message : String(taskError);
+                            setNotice(null);
+                            setError(message);
+                          } finally {
+                            setTranscribingAfterStop(false);
+                          }
+                        }}
+                      >
+                        Stop Recording
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                <div className="action-row post-actions">
                   <button
-                    key={item.type}
-                    disabled={busy || transcribingAfterStop}
+                    disabled={!canRunPostRecordingActions || busy}
                     onClick={() =>
                       runTask(
-                        async () => api.generateArtifact(activeEntry.id, item.type),
-                        `${item.label} completed`
+                        async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
+                        "Transcription ready"
                       )
                     }
                   >
-                    {item.label}
+                    Transcribe
                   </button>
-                ))}
-
-                <button
-                  disabled={busy || transcribingAfterStop}
-                  onClick={() => {
-                    runTask(async () => {
-                      const path = await api.exportEntry(activeEntry.id);
-                      setNotice(`Export created at ${path}`);
-                    });
-                  }}
-                >
-                  Export Markdown + Audio
-                </button>
+                  <button
+                    disabled={!canRunPostRecordingActions || busy}
+                    onClick={() =>
+                      runTask(
+                        async () => api.generateArtifact(activeEntry.id, "summary"),
+                        "Summarize completed"
+                      )
+                    }
+                  >
+                    Summarize
+                  </button>
+                  <button
+                    disabled={!canRunPostRecordingActions || busy}
+                    onClick={() =>
+                      runTask(
+                        async () => api.generateArtifact(activeEntry.id, "analysis"),
+                        "Analyze completed"
+                      )
+                    }
+                  >
+                    Analyze
+                  </button>
+                  <div className="inline-select-action">
+                    <select
+                      value={critiqueType}
+                      onChange={(event) => setCritiqueType(event.target.value as ArtifactType)}
+                      disabled={!canRunPostRecordingActions || busy}
+                    >
+                      {CRITIQUE_ACTIONS.map((item) => (
+                        <option key={item.type} value={item.type}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      disabled={!canRunPostRecordingActions || busy}
+                      onClick={() =>
+                        runTask(
+                          async () => api.generateArtifact(activeEntry.id, critiqueType),
+                          `${artifactLabel(critiqueType)} completed`
+                        )
+                      }
+                    >
+                      Critique
+                    </button>
+                  </div>
+                  <button
+                    disabled={!canRunPostRecordingActions || busy}
+                    onClick={() => {
+                      runTask(async () => {
+                        const path = await api.exportEntry(activeEntry.id);
+                        setNotice(`Export created at ${path}`);
+                      });
+                    }}
+                  >
+                    Export
+                  </button>
+                </div>
               </div>
 
               {(recordingSessionId || transcribingAfterStop) && (
@@ -908,16 +1229,8 @@ export default function App() {
                         ))}
                       </div>
                       <p className="help-text">
-                        Signal level: {Math.round(recordingLevel * 100)}% | Captured:{" "}
-                        {formatBytes(recordingBytes)}
+                        Signal level: {Math.round(recordingLevel * 100)}% | Captured: {formatBytes(recordingBytes)}
                       </p>
-                      {selectedLoopbackOnly && recordingLevel < 0.03 && (
-                        <p className="help-text">
-                          {selectedNativeSystemSource
-                            ? "System source appears silent. Ensure macOS granted Screen & System Audio Recording permission and your call app is playing audio."
-                            : "Loopback input appears silent. Ensure your call/browser output is routed to BlackHole (or a Multi-Output Device that includes BlackHole)."}
-                        </p>
-                      )}
                     </>
                   )}
                 </div>
@@ -938,14 +1251,9 @@ export default function App() {
                   ))}
                 </select>
               </label>
-              <p className="help-text">
-                Use Auto for mixed calls. If Auto is wrong, force the spoken language (for example
-                Russian) to transcribe in that language, not English.
-              </p>
               {latestTranscript && (
                 <p className="help-text">
-                  Version {latestTranscript.version} | Language: {latestTranscript.language} | Updated:
-                  {" "}
+                  Version {latestTranscript.version} | Language: {latestTranscript.language} | Updated:{" "}
                   {formatDate(latestTranscript.created_at)}
                 </p>
               )}
@@ -968,169 +1276,52 @@ export default function App() {
                 Save Transcript
               </button>
 
-              <h3>Artifacts</h3>
-              {ARTIFACT_TYPES.map((item) => {
-                const latestArtifact = entryBundle
-                  ? latestByType(entryBundle.artifact_revisions, item.type)
-                  : undefined;
-                return (
-                  <div key={item.type} className="artifact-block">
-                    <p>
-                      <strong>{item.label}</strong>
-                    </p>
-                    {latestArtifact && (
-                      <p className="help-text">
-                        v{latestArtifact.version} | transcript v{latestArtifact.source_transcript_version}
-                        {latestArtifact.is_stale ? " | stale" : ""}
-                      </p>
-                    )}
-                    <textarea
-                      className="medium-text"
-                      value={artifactDrafts[item.type]}
-                      onChange={(event) =>
-                        setArtifactDrafts({ ...artifactDrafts, [item.type]: event.target.value })
-                      }
-                    />
-                    <button
-                      disabled={busy}
-                      onClick={() =>
-                        runTask(
-                          async () =>
-                            api.updateArtifact(activeEntry.id, item.type, artifactDrafts[item.type]),
-                          `${item.label} saved`
-                        )
-                      }
-                    >
-                      Save {item.label}
-                    </button>
-                  </div>
-                );
-              })}
+              {visibleArtifactTypes.length > 0 && (
+                <>
+                  <h3>Artifacts</h3>
+                  {visibleArtifactTypes.map((item) => {
+                    const latestArtifact = entryBundle
+                      ? latestByType(entryBundle.artifact_revisions, item.type)
+                      : undefined;
+                    return (
+                      <div key={item.type} className="artifact-block">
+                        <p>
+                          <strong>{item.label}</strong>
+                        </p>
+                        {latestArtifact && (
+                          <p className="help-text">
+                            v{latestArtifact.version} | transcript v{latestArtifact.source_transcript_version}
+                            {latestArtifact.is_stale ? " | stale" : ""}
+                          </p>
+                        )}
+                        <textarea
+                          className="medium-text"
+                          value={artifactDrafts[item.type]}
+                          onChange={(event) =>
+                            setArtifactDrafts({ ...artifactDrafts, [item.type]: event.target.value })
+                          }
+                        />
+                        <button
+                          disabled={busy}
+                          onClick={() =>
+                            runTask(
+                              async () =>
+                                api.updateArtifact(activeEntry.id, item.type, artifactDrafts[item.type]),
+                              `${item.label} saved`
+                            )
+                          }
+                        >
+                          Save {item.label}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
             </>
           )}
         </section>
       </main>
-
-      <section className="card settings-panel">
-        <h2>Local Model & Prompt Settings</h2>
-        <label>
-          Ollama Model Name
-          <input value={modelName} onChange={(event) => setModelName(event.target.value)} />
-        </label>
-        <button
-          disabled={busy}
-          onClick={() => runTask(async () => api.updateModelName(modelName), "Model name updated")}
-        >
-          Save Model
-        </button>
-        <label>
-          Whisper Model
-          <select
-            value={whisperModel}
-            onChange={(event) => setWhisperModel(event.target.value)}
-          >
-            {whisperModelChoices.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Custom Whisper Model (optional)
-          <input
-            value={whisperModel}
-            onChange={(event) => setWhisperModel(event.target.value)}
-            placeholder="turbo | large-v3 | ggml-base.bin | /path/to/model.bin"
-          />
-        </label>
-        <div className="action-row">
-          <button
-            disabled={busy}
-            onClick={() =>
-              runTask(async () => api.updateWhisperModel(whisperModel), "Whisper model updated")
-            }
-          >
-            Save Whisper Model
-          </button>
-          <button
-            disabled={busy}
-            onClick={() =>
-              runTask(async () => {
-                const models = await api.listWhisperModels();
-                setWhisperModelOptions(Array.from(new Set([whisperModel, ...models])));
-              }, "Whisper models refreshed")
-            }
-          >
-            Refresh Whisper Models
-          </button>
-        </div>
-        <p className="help-text">
-          Use <code>turbo</code>/<code>large-v3</code> with OpenAI Whisper CLI (<code>whisper</code>), or
-          use local <code>ggml-*.bin</code> models with <code>whisper-cli</code>. OpenAI models download
-          on first run.
-        </p>
-
-        {CRITIQUE_ROLES.map((item) => (
-          <div key={item.role} className="artifact-block">
-            <p>
-              <strong>{item.label}</strong>
-            </p>
-            <textarea
-              className="medium-text"
-              value={promptDrafts[item.role]}
-              onChange={(event) =>
-                setPromptDrafts({ ...promptDrafts, [item.role]: event.target.value })
-              }
-            />
-            <button
-              disabled={busy}
-              onClick={() =>
-                runTask(
-                  async () => api.updatePrompt(item.role, promptDrafts[item.role]),
-                  `${item.label} updated`
-                )
-              }
-            >
-              Save Prompt
-            </button>
-          </div>
-        ))}
-      </section>
-
-      <section className="card settings-panel">
-        <h2>Trash</h2>
-        <div className="trash-grid">
-          <div>
-            <h3>Folders</h3>
-            {trashedFolders.map((folder) => (
-              <div key={folder.id} className="trash-row">
-                <span>{folder.name}</span>
-                <button onClick={() => runTask(async () => api.restoreFromTrash("folder", folder.id))}>
-                  Restore
-                </button>
-                <button onClick={() => runTask(async () => api.purgeEntity("folder", folder.id))}>
-                  Purge
-                </button>
-              </div>
-            ))}
-          </div>
-          <div>
-            <h3>Entries</h3>
-            {trashedEntries.map((entry) => (
-              <div key={entry.id} className="trash-row">
-                <span>{entry.title}</span>
-                <button onClick={() => runTask(async () => api.restoreFromTrash("entry", entry.id))}>
-                  Restore
-                </button>
-                <button onClick={() => runTask(async () => api.purgeEntity("entry", entry.id))}>
-                  Purge
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
     </div>
   );
 }
