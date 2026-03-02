@@ -1,0 +1,7 @@
+interface:
+  display_name: "Liquid Glass Design"
+  short_description: "iOS 26 Liquid Glass design system — dynamic glass material with blur, reflection, and interactive morphing for SwiftUI, UIKit, and WidgetKit"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Liquid Glass Design skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

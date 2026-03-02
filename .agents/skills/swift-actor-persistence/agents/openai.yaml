@@ -1,0 +1,7 @@
+interface:
+  display_name: "Swift Actor Persistence"
+  short_description: "Thread-safe data persistence in Swift using actors — in-memory cache with file-backed storage, eliminating data races by design."
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Swift Actor Persistence skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

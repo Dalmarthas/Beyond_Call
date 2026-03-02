@@ -1,0 +1,7 @@
+interface:
+  display_name: "TDD Workflow"
+  short_description: "Driver for behavior-changing implementation work: red/green/refactor before milestone verification."
+  brand_color: "#22C55E"
+  default_prompt: "Use TDD as the active implementation workflow. Keep red/green cycles tight and defer verification-loop to milestone checkpoints."
+policy:
+  allow_implicit_invocation: true

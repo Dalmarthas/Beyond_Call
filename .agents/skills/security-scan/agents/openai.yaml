@@ -1,0 +1,7 @@
+interface:
+  display_name: "Security Scan"
+  short_description: "Scan Codex configs, skills, and command assets for security risks using AgentShield and targeted manual checks."
+  brand_color: "#3B82F6"
+  default_prompt: "Run Security Scan for workspace/config/agent assets at checkpoint time; pair with security-review when code-level security behavior changed."
+policy:
+  allow_implicit_invocation: true

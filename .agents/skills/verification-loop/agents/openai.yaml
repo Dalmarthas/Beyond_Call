@@ -1,0 +1,7 @@
+interface:
+  display_name: "Verification Loop"
+  short_description: "Milestone readiness gate: build, lint, typecheck, test, and security checks before hand-off."
+  brand_color: "#10B981"
+  default_prompt: "Run verification-loop at a logical checkpoint (pre-commit/pre-push/PR), not during active TDD micro-cycles."
+policy:
+  allow_implicit_invocation: true

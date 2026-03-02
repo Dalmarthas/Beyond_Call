@@ -1,0 +1,7 @@
+interface:
+  display_name: "Docker Patterns"
+  short_description: "Docker and Docker Compose patterns for local development, container security, networking, volume strategies, and multi-service orchestration"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Docker Patterns skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

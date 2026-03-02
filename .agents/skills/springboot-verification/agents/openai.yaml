@@ -1,0 +1,7 @@
+interface:
+  display_name: "Springboot Verification"
+  short_description: "Verification loop for Spring Boot projects: build, static analysis, tests with coverage, security scans, and diff review before release or P"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Springboot Verification skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

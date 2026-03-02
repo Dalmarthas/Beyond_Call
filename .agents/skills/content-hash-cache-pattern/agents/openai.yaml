@@ -1,0 +1,7 @@
+interface:
+  display_name: "Content Hash Cache Pattern"
+  short_description: "Cache expensive file processing results using SHA-256 content hashes — path-independent, auto-invalidating, with service layer separation."
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Content Hash Cache Pattern skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

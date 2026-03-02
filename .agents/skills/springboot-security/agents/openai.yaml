@@ -1,0 +1,7 @@
+interface:
+  display_name: "Springboot Security"
+  short_description: "Spring Security best practices for authn/authz, validation, CSRF, secrets, headers, rate limiting, and dependency security in Java Spring Bo"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Springboot Security skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Foundation Models On Device"
+  short_description: "Apple FoundationModels framework for on-device LLM — text generation, guided generation with @Generable, tool calling, and snapshot streamin"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Foundation Models On Device skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Swiftui Patterns"
+  short_description: "SwiftUI architecture patterns, state management with @Observable, view composition, navigation, performance optimization, and modern iOS/mac"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Swiftui Patterns skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

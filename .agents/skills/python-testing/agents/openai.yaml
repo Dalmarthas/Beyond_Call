@@ -1,0 +1,7 @@
+interface:
+  display_name: "Python Testing"
+  short_description: "Python testing strategies using pytest, TDD methodology, fixtures, mocking, parametrization, and coverage requirements."
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Python Testing skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

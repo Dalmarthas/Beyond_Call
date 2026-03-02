@@ -1,0 +1,7 @@
+interface:
+  display_name: "Database Migrations"
+  short_description: "Database migration best practices for schema changes, data migrations, rollbacks, and zero-downtime deployments across PostgreSQL, MySQL, an"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Database Migrations skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Django Security"
+  short_description: "Django security best practices, authentication, authorization, CSRF protection, SQL injection prevention, XSS prevention, and secure deploym"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Django Security skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

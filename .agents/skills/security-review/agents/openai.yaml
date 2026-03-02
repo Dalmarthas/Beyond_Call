@@ -1,0 +1,7 @@
+interface:
+  display_name: "Security Review"
+  short_description: "Code-level security review for auth/input/secrets/sensitive flows; complements workspace-level security-scan."
+  brand_color: "#EF4444"
+  default_prompt: "Run security-review on code behavior and pair with security-scan when workspace/config/prompt assets also changed."
+policy:
+  allow_implicit_invocation: true

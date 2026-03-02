@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill Stocktake"
+  short_description: "Use when auditing Claude skills and commands for quality. Supports Quick Scan (changed skills only) and Full Stocktake modes with sequential"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Skill Stocktake skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

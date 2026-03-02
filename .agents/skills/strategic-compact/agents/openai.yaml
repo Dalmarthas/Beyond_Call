@@ -1,0 +1,7 @@
+interface:
+  display_name: "Strategic Compact"
+  short_description: "Suggest `/compact` at logical task boundaries to keep long Codex sessions coherent."
+  brand_color: "#14B8A6"
+  default_prompt: "Apply strategic compaction as advisory-only: suggest `/compact` at completed checkpoints and never interrupt active TDD/debug/verification loops."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Golang Patterns"
+  short_description: "Idiomatic Go patterns, best practices, and conventions for building robust, efficient, and maintainable Go applications."
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Golang Patterns skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

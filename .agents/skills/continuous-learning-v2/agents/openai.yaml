@@ -1,0 +1,7 @@
+interface:
+  display_name: "Continuous Learning V2"
+  short_description: "Instinct learning for Codex sessions: capture observations, mine repeated patterns, and evolve project-scoped instincts."
+  brand_color: "#3B82F6"
+  default_prompt: "Apply Continuous Learning V2 as a non-blocking layer: capture/mine patterns at checkpoints and avoid interrupting active implementation or verification drivers."
+policy:
+  allow_implicit_invocation: true

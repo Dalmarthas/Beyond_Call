@@ -1,0 +1,7 @@
+interface:
+  display_name: "Springboot Tdd"
+  short_description: "Test-driven development for Spring Boot using JUnit 5, Mockito, MockMvc, Testcontainers, and JaCoCo. Use when adding features, fixing bugs, "
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Springboot Tdd skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Regex Vs Llm Structured Text"
+  short_description: "Decision framework for choosing between regex and LLM when parsing structured text — start with regex, add LLM only for low-confidence edge "
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Regex Vs Llm Structured Text skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

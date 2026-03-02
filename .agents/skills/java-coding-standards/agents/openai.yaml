@@ -1,0 +1,7 @@
+interface:
+  display_name: "Java Coding Standards"
+  short_description: "Java coding standards for Spring Boot services: naming, immutability, Optional usage, streams, exceptions, generics, and project layout."
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Java Coding Standards skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

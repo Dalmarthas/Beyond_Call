@@ -1,0 +1,7 @@
+interface:
+  display_name: "Configure Ecc"
+  short_description: "Interactive installer for Everything Claude Code — guides users through selecting and installing skills and rules to user-level or project-l"
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Configure Ecc skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true

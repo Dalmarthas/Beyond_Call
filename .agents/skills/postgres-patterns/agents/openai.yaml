@@ -1,0 +1,7 @@
+interface:
+  display_name: "Postgres Patterns"
+  short_description: "PostgreSQL database patterns for query optimization, schema design, indexing, and security. Based on Supabase best practices."
+  brand_color: "#3B82F6"
+  default_prompt: "Apply the Postgres Patterns skill workflow from SKILL.md to this task."
+policy:
+  allow_implicit_invocation: true
