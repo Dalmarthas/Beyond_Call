@@ -630,6 +630,111 @@ fn native_system_recording_device() -> Option<RecordingDevice> {
     None
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RecordingSourceAnalysis {
+    has_native_system_source: bool,
+    native_with_microphone: bool,
+}
+
+impl RecordingSourceAnalysis {
+    fn requires_ffmpeg(self, has_existing_path: bool) -> bool {
+        !self.has_native_system_source || has_existing_path || self.native_with_microphone
+    }
+}
+
+fn is_native_system_source(source: &RecordingSource) -> bool {
+    source.format.eq_ignore_ascii_case("screencapturekit")
+}
+
+fn analyze_recording_sources(
+    sources: &[RecordingSource],
+    is_macos_target: bool,
+    native_system_supported: bool,
+    native_plus_microphone_supported: bool,
+) -> Result<RecordingSourceAnalysis, String> {
+    if sources.is_empty() {
+        return Err("At least one audio source is required".to_string());
+    }
+
+    let has_native_system_source = sources.iter().any(is_native_system_source);
+    let non_native_source_count = sources.iter().filter(|source| !is_native_system_source(source)).count();
+    let native_with_microphone = has_native_system_source && non_native_source_count > 0;
+
+    if has_native_system_source && !is_macos_target {
+        return Err("Native system-audio source is currently available only on macOS".to_string());
+    }
+    if has_native_system_source && !native_system_supported {
+        return Err(
+            "Native system-audio capture requires macOS 13 or newer. Use microphone/loopback sources on this version."
+                .to_string(),
+        );
+    }
+    if native_with_microphone && !native_plus_microphone_supported {
+        return Err(
+            "Native system + microphone capture requires macOS 15 or newer. On older versions, use loopback + microphone sources."
+                .to_string(),
+        );
+    }
+    if has_native_system_source && non_native_source_count > 1 {
+        return Err(
+            "With System Audio (macOS Native), select at most one additional microphone source."
+                .to_string(),
+        );
+    }
+
+    Ok(RecordingSourceAnalysis {
+        has_native_system_source,
+        native_with_microphone,
+    })
+}
+
+fn recording_output_paths(
+    entry_directory: &Path,
+    has_existing_path: bool,
+    native_with_microphone: bool,
+    segment_stamp: u64,
+) -> (PathBuf, Option<PathBuf>) {
+    let output_path = if has_existing_path {
+        entry_directory
+            .join("audio")
+            .join(format!("segment-{segment_stamp}.wav"))
+    } else {
+        entry_directory.join("audio").join("original.wav")
+    };
+
+    let native_microphone_path = if native_with_microphone {
+        if has_existing_path {
+            Some(
+                entry_directory
+                    .join("audio")
+                    .join(format!("segment-{segment_stamp}-microphone.wav")),
+            )
+        } else {
+            Some(entry_directory.join("audio").join("original-microphone.wav"))
+        }
+    } else {
+        None
+    };
+
+    (output_path, native_microphone_path)
+}
+
+fn ffmpeg_recording_filter_graph(source_count: usize) -> String {
+    if source_count > 1 {
+        let mut input_refs = String::new();
+        for index in 0..source_count {
+            input_refs.push_str(&format!("[{index}:a]"));
+        }
+        format!(
+            "{input_refs}amix=inputs={source_count}:duration=longest:dropout_transition=2[mix];\
+[mix]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level[mout]"
+        )
+    } else {
+        "[0:a]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level[mout]"
+            .to_string()
+    }
+}
+
 fn spawn_recording_telemetry(stderr: impl std::io::Read + Send + 'static, telemetry: Arc<Mutex<RecordingTelemetry>>) {
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
@@ -1699,39 +1804,12 @@ fn purge_entity(entity_type: String, id: String, state: State<'_, AppState>) -> 
 
 #[tauri::command]
 fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State<'_, AppState>) -> Result<String, String> {
-    if sources.is_empty() {
-        return Err("At least one audio source is required".to_string());
-    }
-
-    let has_native_system_source = sources
-        .iter()
-        .any(|source| source.format.eq_ignore_ascii_case("screencapturekit"));
-    let non_native_source_count = sources
-        .iter()
-        .filter(|source| !source.format.eq_ignore_ascii_case("screencapturekit"))
-        .count();
-    let native_with_microphone = has_native_system_source && non_native_source_count > 0;
-    if has_native_system_source && !cfg!(target_os = "macos") {
-        return Err("Native system-audio source is currently available only on macOS".to_string());
-    }
-    if has_native_system_source && !supports_native_system_audio_capture() {
-        return Err(
-            "Native system-audio capture requires macOS 13 or newer. Use microphone/loopback sources on this version."
-                .to_string(),
-        );
-    }
-    if native_with_microphone && !supports_native_system_audio_plus_microphone() {
-        return Err(
-            "Native system + microphone capture requires macOS 15 or newer. On older versions, use loopback + microphone sources."
-                .to_string(),
-        );
-    }
-    if has_native_system_source && non_native_source_count > 1 {
-        return Err(
-            "With System Audio (macOS Native), select at most one additional microphone source."
-                .to_string(),
-        );
-    }
+    let source_analysis = analyze_recording_sources(
+        &sources,
+        cfg!(target_os = "macos"),
+        supports_native_system_audio_capture(),
+        supports_native_system_audio_plus_microphone(),
+    )?;
 
     let db = db_path(&state)?;
     let conn = connection(&db)?;
@@ -1757,34 +1835,21 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
 
     // ffmpeg is required for the non-native capture path, for native append concatenation,
     // and for native system+microphone final mixing.
-    let requires_ffmpeg = !has_native_system_source || existing_path.is_some() || native_with_microphone;
+    let has_existing_path = existing_path.is_some();
+    let requires_ffmpeg = source_analysis.requires_ffmpeg(has_existing_path);
     if requires_ffmpeg && !find_executable("ffmpeg") {
         return Err("ffmpeg not found in PATH. Install ffmpeg to enable this recording mode.".to_string());
     }
 
     let segment_stamp = unix_now();
-    let output_path = if existing_path.is_some() {
-        entry_directory
-            .join("audio")
-            .join(format!("segment-{segment_stamp}.wav"))
-    } else {
-        entry_directory.join("audio").join("original.wav")
-    };
-    let native_microphone_path = if native_with_microphone {
-        if existing_path.is_some() {
-            Some(
-                entry_directory
-                    .join("audio")
-                    .join(format!("segment-{segment_stamp}-microphone.wav")),
-            )
-        } else {
-            Some(entry_directory.join("audio").join("original-microphone.wav"))
-        }
-    } else {
-        None
-    };
+    let (output_path, native_microphone_path) = recording_output_paths(
+        &entry_directory,
+        has_existing_path,
+        source_analysis.native_with_microphone,
+        segment_stamp,
+    );
 
-    let mut child = if has_native_system_source {
+    let mut child = if source_analysis.has_native_system_source {
         #[cfg(target_os = "macos")]
         {
             let helper_binary = ensure_sck_recorder_binary(&base_data_dir)?;
@@ -1821,20 +1886,7 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
             command.arg(&source.input);
         }
 
-        let filter_graph = if sources.len() > 1 {
-            let mut input_refs = String::new();
-            for index in 0..sources.len() {
-                input_refs.push_str(&format!("[{index}:a]"));
-            }
-            format!(
-                "{input_refs}amix=inputs={}:duration=longest:dropout_transition=2[mix];\
-[mix]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level[mout]",
-                sources.len()
-            )
-        } else {
-            "[0:a]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level[mout]"
-                .to_string()
-        };
+        let filter_graph = ffmpeg_recording_filter_graph(sources.len());
         command.arg("-filter_complex");
         command.arg(filter_graph);
         command.arg("-map");
@@ -1865,7 +1917,7 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
         .try_wait()
         .map_err(|e| format!("Failed to inspect recorder process status: {e}"))?
     {
-        if has_native_system_source {
+        if source_analysis.has_native_system_source {
             let details = telemetry
                 .lock()
                 .ok()
@@ -2582,4 +2634,99 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running AI Transcribe Local");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn source(format: &str, input: &str) -> RecordingSource {
+        RecordingSource {
+            label: format!("{format}:{input}"),
+            format: format.to_string(),
+            input: input.to_string(),
+        }
+    }
+
+    #[test]
+    fn analyze_recording_sources_requires_sources() {
+        let error = analyze_recording_sources(&[], true, true, true).unwrap_err();
+        assert_eq!(error, "At least one audio source is required");
+    }
+
+    #[test]
+    fn analyze_recording_sources_rejects_native_on_non_macos() {
+        let sources = vec![source("screencapturekit", "system")];
+        let error = analyze_recording_sources(&sources, false, false, false).unwrap_err();
+        assert_eq!(
+            error,
+            "Native system-audio source is currently available only on macOS"
+        );
+    }
+
+    #[test]
+    fn analyze_recording_sources_rejects_native_plus_multiple_non_native() {
+        let sources = vec![
+            source("screencapturekit", "system"),
+            source("avfoundation", ":0"),
+            source("avfoundation", ":1"),
+        ];
+        let error = analyze_recording_sources(&sources, true, true, true).unwrap_err();
+        assert_eq!(
+            error,
+            "With System Audio (macOS Native), select at most one additional microphone source."
+        );
+    }
+
+    #[test]
+    fn analyze_recording_sources_calculates_ffmpeg_requirement() {
+        let native_only = vec![source("screencapturekit", "system")];
+        let native = analyze_recording_sources(&native_only, true, true, true).unwrap();
+        assert!(native.has_native_system_source);
+        assert!(!native.native_with_microphone);
+        assert!(!native.requires_ffmpeg(false));
+        assert!(native.requires_ffmpeg(true));
+
+        let mic_only = vec![source("avfoundation", ":0")];
+        let non_native = analyze_recording_sources(&mic_only, true, true, true).unwrap();
+        assert!(!non_native.has_native_system_source);
+        assert!(non_native.requires_ffmpeg(false));
+    }
+
+    #[test]
+    fn recording_output_paths_new_file_with_native_mic() {
+        let entry_dir = Path::new("/tmp/entry-under-test");
+        let (output, native_mic) = recording_output_paths(entry_dir, false, true, 42);
+        assert_eq!(output, entry_dir.join("audio").join("original.wav"));
+        assert_eq!(
+            native_mic,
+            Some(entry_dir.join("audio").join("original-microphone.wav"))
+        );
+    }
+
+    #[test]
+    fn recording_output_paths_segment_file_with_native_mic() {
+        let entry_dir = Path::new("/tmp/entry-under-test");
+        let (output, native_mic) = recording_output_paths(entry_dir, true, true, 77);
+        assert_eq!(output, entry_dir.join("audio").join("segment-77.wav"));
+        assert_eq!(
+            native_mic,
+            Some(entry_dir.join("audio").join("segment-77-microphone.wav"))
+        );
+    }
+
+    #[test]
+    fn ffmpeg_recording_filter_graph_single_and_multi_source() {
+        let single = ffmpeg_recording_filter_graph(1);
+        assert_eq!(
+            single,
+            "[0:a]astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level[mout]"
+        );
+
+        let multi = ffmpeg_recording_filter_graph(2);
+        assert!(multi.contains("[0:a][1:a]amix=inputs=2"));
+        assert!(multi.contains("[mix]astats=metadata=1:reset=1"));
+        assert!(multi.ends_with("[mout]"));
+    }
 }
