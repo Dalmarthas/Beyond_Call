@@ -990,9 +990,10 @@ fn parse_openai_whisper_detected_language(output_text: &str) -> Option<String> {
         };
         let suffix = line[(pos + marker.len())..].trim();
         let lang = suffix
-            .split(|ch: char| ch == ',' || ch == '(' || ch == '[' || ch.is_whitespace())
+            .split(|ch: char| ch == ',' || ch == '(' || ch == '[')
             .next()
             .unwrap_or("")
+            .trim()
             .trim_matches(|ch: char| !ch.is_ascii_alphabetic() && ch != '-')
             .to_ascii_lowercase();
         if (2..=16).contains(&lang.len()) {
@@ -1000,6 +1001,49 @@ fn parse_openai_whisper_detected_language(output_text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn normalize_transcription_language(raw_language: &str) -> String {
+    let trimmed = raw_language.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return "auto".to_string();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let mapped_code = match lower.as_str() {
+        "english" => Some("en"),
+        "russian" => Some("ru"),
+        "ukrainian" => Some("uk"),
+        "spanish" | "castilian" | "valencian" => Some("es"),
+        "german" => Some("de"),
+        "french" => Some("fr"),
+        _ => None,
+    };
+    if let Some(code) = mapped_code {
+        return code.to_string();
+    }
+
+    let looks_like_code = lower.len() <= 3 && lower.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '-');
+    if looks_like_code {
+        return lower;
+    }
+
+    // OpenAI Whisper CLI accepts title-cased language names.
+    lower
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut normalized = first.to_ascii_uppercase().to_string();
+                    normalized.push_str(chars.as_str());
+                    normalized
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn ollama_client(timeout_seconds: u64) -> Result<Client, String> {
@@ -2102,11 +2146,12 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
     let output_base = transcript_dir.join(format!("tmp_{}", unix_now()));
     let preferred_model = whisper_model_name(&conn)?;
     let use_whisper_cpp = whisper_model_looks_like_cpp(&preferred_model);
-    let language_requested = language
+    let language_requested_raw = language
         .as_ref()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "auto".to_string());
+    let language_requested = normalize_transcription_language(&language_requested_raw);
 
     let mut command = if use_whisper_cpp {
         if !find_executable("whisper-cli") {
@@ -2204,13 +2249,15 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
     }
 
     let version = get_next_transcript_version(&conn, &entry_id)?;
-    let mut language_value = language.unwrap_or_else(|| "auto".to_string());
+    let mut language_value = normalize_transcription_language(
+        &language.unwrap_or_else(|| "auto".to_string()),
+    );
     if language_value.eq_ignore_ascii_case("auto") {
         if let Some(detected) = parse_whisper_detected_language(&stderr_text)
             .or_else(|| parse_openai_whisper_detected_language(&stderr_text))
             .or_else(|| parse_openai_whisper_detected_language(&stdout_text))
         {
-            language_value = detected;
+            language_value = normalize_transcription_language(&detected);
         }
     }
 
@@ -2728,5 +2775,29 @@ mod tests {
         assert!(multi.contains("[0:a][1:a]amix=inputs=2"));
         assert!(multi.contains("[mix]astats=metadata=1:reset=1"));
         assert!(multi.ends_with("[mout]"));
+    }
+
+    #[test]
+    fn normalize_transcription_language_handles_detected_russian() {
+        assert_eq!(normalize_transcription_language("russian"), "ru");
+        assert_eq!(normalize_transcription_language("Russian"), "ru");
+        assert_eq!(normalize_transcription_language("ru"), "ru");
+    }
+
+    #[test]
+    fn normalize_transcription_language_title_cases_unknown_names() {
+        assert_eq!(
+            normalize_transcription_language("haitian creole"),
+            "Haitian Creole"
+        );
+    }
+
+    #[test]
+    fn parse_openai_whisper_detected_language_supports_multi_word_names() {
+        let log = "Detected language: Haitian Creole (0.99)";
+        assert_eq!(
+            parse_openai_whisper_detected_language(log),
+            Some("haitian creole".to_string())
+        );
     }
 }
