@@ -294,6 +294,14 @@ function formatDate(ts: string) {
   return new Date(ts).toLocaleString();
 }
 
+function formatShortDate(ts: string) {
+  return new Date(ts).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
@@ -355,6 +363,7 @@ export default function App() {
   const [recordingBytes, setRecordingBytes] = useState(0);
   const [meterBars, setMeterBars] = useState<number[]>(() => Array.from({ length: 24 }, () => 0.02));
   const [transcriptionLanguage, setTranscriptionLanguage] = useState<string>("auto");
+  const [detailTab, setDetailTab] = useState<"transcript" | "summary" | "analysis" | "critique">("transcript");
   const tt = (text: string) => (uiLanguage === "ru" ? RU_TRANSLATIONS[text] ?? text : text);
 
   const activeEntry = useMemo(() => {
@@ -376,6 +385,22 @@ export default function App() {
     }
     return map;
   }, [bootstrap?.entries]);
+
+  const visibleFolders = useMemo(
+    () =>
+      (bootstrap?.folders ?? [])
+        .filter((folder) => !folder.deleted_at)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [bootstrap?.folders]
+  );
+  const selectedFolder = useMemo(
+    () => visibleFolders.find((folder) => folder.id === selectedFolderId) ?? null,
+    [visibleFolders, selectedFolderId]
+  );
+  const selectedFolderEntries = useMemo(
+    () => (selectedFolderId ? entriesByFolder.get(selectedFolderId) ?? [] : []),
+    [entriesByFolder, selectedFolderId]
+  );
 
   const trashedFolders = useMemo(
     () => bootstrap?.folders.filter((folder) => folder.deleted_at) ?? [],
@@ -591,6 +616,10 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [recordingSessionId]);
+
+  useEffect(() => {
+    setDetailTab("transcript");
+  }, [selectedEntryId]);
 
   const folderTree = useMemo(() => {
     if (!bootstrap) {
@@ -818,659 +847,444 @@ export default function App() {
     setError(tt("Select a folder or entry first."));
   }
 
+  const activeArtifactType: ArtifactType =
+    detailTab === "summary" ? "summary" : detailTab === "analysis" ? "analysis" : critiqueType;
+
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div className="header-title-row">
-          <h1>{tt("AI Call Recorder Local")}</h1>
-          <div className="header-icon-actions">
-            <button
-              className={showSettings ? "icon-only active" : "icon-only"}
-              title={tt("Settings")}
-              aria-label={tt("Settings")}
-              onClick={() => {
-                setShowSettings((current) => !current);
-                setShowTrash(false);
-              }}
-            >
-              <Icon name="settings" />
-            </button>
-            <button
-              className={showTrash ? "icon-only active" : "icon-only"}
-              title={tt("Trash")}
-              aria-label={tt("Trash")}
-              onClick={() => {
-                setShowTrash((current) => !current);
-                setShowSettings(false);
-              }}
-            >
-              <Icon name="trash" />
-            </button>
+    <div className="redesign-shell">
+      <aside className="redesign-sidebar">
+        <div className="brand-block">
+          <div className="brand-mic">◉</div>
+          <div>
+            <p className="brand-title">Vocalize</p>
+            <p className="brand-subtitle">LOCAL INTELLIGENCE</p>
           </div>
         </div>
-      </header>
 
-      {showSettings && (
-        <section className="card flyout-panel">
-          <div className="panel-heading">
-            <h2>{tt("Local Model & Prompt Settings")}</h2>
+        <div className="sidebar-content">
+          <div className="workspace-heading">
+            <span>{tt("Workspace").toUpperCase()}</span>
             <button
-              className="icon-only"
-              aria-label={tt("Close settings")}
-              title={tt("Close settings")}
-              onClick={() => setShowSettings(false)}
-            >
-              <Icon name="remove" />
-            </button>
-          </div>
-          <label>
-            {tt("Interface Language")}
-            <select
-              value={uiLanguage}
-              onChange={(event) => setUiLanguage(event.target.value as "en" | "ru")}
-            >
-              <option value="en">{tt("English")}</option>
-              <option value="ru">{tt("Russian")}</option>
-            </select>
-          </label>
-          <label>
-            {tt("Ollama Model Name")}
-            <input value={modelName} onChange={(event) => setModelName(event.target.value)} />
-          </label>
-          <button
-            disabled={busy}
-            onClick={() => runTask(async () => api.updateModelName(modelName), tt("Model name updated"))}
-          >
-            {tt("Save Model")}
-          </button>
-          <label>
-            {tt("Whisper Model")}
-            <select
-              value={whisperModel}
-              onChange={(event) => setWhisperModel(event.target.value)}
-            >
-              {whisperModelChoices.map((model) => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            {tt("Custom Whisper Model (optional)")}
-            <input
-              value={whisperModel}
-              onChange={(event) => setWhisperModel(event.target.value)}
-              placeholder={tt("turbo | large-v3 | ggml-base.bin | /path/to/model.bin")}
-            />
-          </label>
-          <div className="action-row">
-            <button
+              className="ghost-icon"
               disabled={busy}
-              onClick={() =>
-                runTask(async () => api.updateWhisperModel(whisperModel), tt("Whisper model updated"))
-              }
+              title={tt("Add folder")}
+              aria-label={tt("Add folder")}
+              onClick={createFolderFromCurrentSelection}
             >
-              {tt("Save Whisper Model")}
-            </button>
-            <button
-              disabled={busy}
-              onClick={() =>
-                runTask(async () => {
-                  const models = await api.listWhisperModels();
-                  setWhisperModelOptions(Array.from(new Set([whisperModel, ...models])));
-                }, tt("Whisper models refreshed"))
-              }
-            >
-              {tt("Refresh Whisper Models")}
-            </button>
-          </div>
-          <p className="help-text">
-            {tt("Use turbo/large-v3 with OpenAI Whisper CLI (whisper), or use local ggml-*.bin models with whisper-cli.")}
-          </p>
-
-          <div className="artifact-block">
-            <p>
-              <strong>{tt(SUMMARY_PROMPT.label)}</strong>
-            </p>
-            <textarea
-              className="medium-text"
-              value={promptDrafts[SUMMARY_PROMPT.role]}
-              onChange={(event) =>
-                setPromptDrafts({ ...promptDrafts, [SUMMARY_PROMPT.role]: event.target.value })
-              }
-            />
-            <button
-              disabled={busy}
-              onClick={() =>
-                runTask(
-                  async () => api.updatePrompt(SUMMARY_PROMPT.role, promptDrafts[SUMMARY_PROMPT.role]),
-                  `${tt(SUMMARY_PROMPT.label)} ${tt("updated")}`
-                )
-              }
-            >
-              {tt("Save")} {tt(SUMMARY_PROMPT.label)}
+              +
             </button>
           </div>
 
-          {CRITIQUE_ROLES.map((item) => (
-            <div key={item.role} className="artifact-block">
-              <p>
-                <strong>{tt(item.label)}</strong>
-              </p>
-              <textarea
-                className="medium-text"
-                value={promptDrafts[item.role]}
-                onChange={(event) =>
-                  setPromptDrafts({ ...promptDrafts, [item.role]: event.target.value })
-                }
-              />
-              <button
-                disabled={busy}
-                onClick={() =>
-                  runTask(
-                    async () => api.updatePrompt(item.role, promptDrafts[item.role]),
-                    `${tt(item.label)} ${tt("updated")}`
-                  )
-                }
-              >
-                {tt("Save Prompt")}
-              </button>
-            </div>
-          ))}
-        </section>
-      )}
-
-      {showTrash && (
-        <section className="card flyout-panel">
-          <div className="panel-heading">
-            <h2>{tt("Trash")}</h2>
-            <button
-              className="icon-only"
-              aria-label={tt("Close trash")}
-              title={tt("Close trash")}
-              onClick={() => setShowTrash(false)}
-            >
-              <Icon name="remove" />
-            </button>
-          </div>
-          <div className="trash-grid">
-            <div>
-              <h3>{tt("Folders")}</h3>
-              {trashedFolders.map((folder) => (
-                <div key={folder.id} className="trash-row">
+          <ul className="workspace-list">
+            {visibleFolders.map((folder) => (
+              <li key={folder.id}>
+                <button
+                  className={selectedFolderId === folder.id ? "workspace-item active" : "workspace-item"}
+                  onClick={() => {
+                    setSelectedFolderId(folder.id);
+                    setSelectedEntryId(null);
+                    setEntryBundle(null);
+                  }}
+                >
+                  <span className="workspace-icon">
+                    <Icon name="folder" />
+                  </span>
                   <span>{folder.name}</span>
-                  <button onClick={() => runTask(async () => api.restoreFromTrash("folder", folder.id))}>
-                    {tt("Restore")}
-                  </button>
-                  <button onClick={() => runTask(async () => api.purgeEntity("folder", folder.id))}>
-                    {tt("Purge")}
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div>
-              <h3>{tt("Entries")}</h3>
-              {trashedEntries.map((entry) => (
-                <div key={entry.id} className="trash-row">
-                  <span>{entry.title}</span>
-                  <button onClick={() => runTask(async () => api.restoreFromTrash("entry", entry.id))}>
-                    {tt("Restore")}
-                  </button>
-                  <button onClick={() => runTask(async () => api.purgeEntity("entry", entry.id))}>
-                    {tt("Purge")}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
 
-      {error && <p className="status error">{error}</p>}
-      {notice && <p className="status success">{notice}</p>}
+        <button
+          className="sidebar-footer-btn"
+          onClick={() => {
+            setShowSettings((current) => !current);
+            setShowTrash(false);
+          }}
+        >
+          <span className="gear-symbol">⚙</span>
+          <span>{tt("AI Prompts")}</span>
+        </button>
+      </aside>
 
-      <main className="layout-grid">
-        <aside className="card workspace-panel">
-          <div className="panel-heading">
-            <h2>{tt("Workspace")}</h2>
-            <div className="icon-button-group">
+      <main className="redesign-main">
+        <header className="top-chrome">
+          {!activeEntry ? (
+            <div className="crumb-row">
+              <span>{tt("Home")}</span>
+              <span className="crumb-sep">→</span>
+              <span>{selectedFolder?.name ?? tt("Workspace")}</span>
+            </div>
+          ) : (
+            <div className="detail-head-left">
               <button
-                className="icon-only"
-                title={selectedFolderId ? tt("Add subfolder") : tt("Add folder")}
-                aria-label={selectedFolderId ? tt("Add subfolder") : tt("Add folder")}
+                className="ghost-icon"
+                onClick={() => {
+                  setSelectedEntryId(null);
+                  setEntryBundle(null);
+                }}
+              >
+                ←
+              </button>
+              <strong>{activeEntry.title}</strong>
+            </div>
+          )}
+
+          {!activeEntry ? (
+            <button className="outline-btn" disabled={busy || !selectedFolderId} onClick={createEntryForSelectedFolder}>
+              ⏺ {tt("Record Call")}
+            </button>
+          ) : (
+            <div className="top-actions">
+              <button
+                className="outline-btn"
                 disabled={busy}
-                onClick={createFolderFromCurrentSelection}
+                onClick={() => {
+                  if (!activeEntry) {
+                    return;
+                  }
+                  if (detailTab === "transcript") {
+                    const language = transcriptionLanguage || latestTranscript?.language || "auto";
+                    runTask(
+                      async () => api.updateTranscript(activeEntry.id, transcriptDraft, language),
+                      tt("Transcript saved")
+                    );
+                    return;
+                  }
+                  runTask(
+                    async () =>
+                      api.updateArtifact(activeEntry.id, activeArtifactType, artifactDrafts[activeArtifactType]),
+                    `${artifactLabel(activeArtifactType)} ${tt("saved")}`
+                  );
+                }}
               >
-                <Icon name="folder-plus" />
+                {tt("Save")}
               </button>
-              <button
-                className="icon-only"
-                title={tt("Add entry")}
-                aria-label={tt("Add entry")}
-                disabled={busy || !selectedFolderId}
-                onClick={createEntryForSelectedFolder}
-              >
-                <Icon name="entry-plus" />
-              </button>
-              <button
-                className="icon-only"
-                title={tt("Rename selected")}
-                aria-label={tt("Rename selected")}
-                disabled={busy || (!selectedFolderId && !selectedEntryId)}
-                onClick={renameSelectedEntity}
-              >
-                <Icon name="edit" />
-              </button>
-              <button
-                className="icon-only"
-                title={tt("Delete selected")}
-                aria-label={tt("Delete selected")}
-                disabled={busy || (!selectedFolderId && !selectedEntryId)}
-                onClick={moveSelectedEntityToTrash}
-              >
-                <Icon name="trash" />
+              <button className="ghost-icon" onClick={() => setShowSettings((current) => !current)}>
+                ⋮
               </button>
             </div>
-          </div>
-          <input
-            value={workspaceNameDraft}
-            onChange={(event) => setWorkspaceNameDraft(event.target.value)}
-            placeholder={
-              selectedEntryId
-                ? tt("Entry name")
-                : selectedFolderId
-                  ? tt("Subfolder, entry, or rename")
-                  : tt("Workspace item name")
-            }
-            disabled={busy}
-            className="panel-name-input"
-          />
-          <ul className="tree-list">{renderFolderNodes(null)}</ul>
-        </aside>
+          )}
+        </header>
 
-        <section className="card detail-panel">
-          <h2>{tt("Entry Detail")}</h2>
-          {!activeEntry && <p>{tt("Select an entry to work on recording and AI tasks.")}</p>}
+        {error && <p className="status error">{error}</p>}
+        {notice && <p className="status success">{notice}</p>}
 
-          {activeEntry && (
-            <>
-              <p>
-                <strong>{activeEntry.title}</strong>
-              </p>
-              <p
-                className={
-                  (recordingSessionId ? "recording" : activeEntry.status) === "recording"
-                    ? "status-pill recording"
-                    : "status-pill"
-                }
+        {!activeEntry ? (
+          <section className="workspace-view">
+            <div className="workspace-page-header">
+              <div>
+                <h1>{selectedFolder?.name ?? tt("Workspace")}</h1>
+                <p>{tt("Manage your recordings and analysis.")}</p>
+              </div>
+              <div className="workspace-actions">
+                <button className="outline-btn" disabled={busy} onClick={createFolderFromCurrentSelection}>
+                  <span className="workspace-icon">
+                    <Icon name="folder" />
+                  </span>
+                  {tt("New Folder")}
+                </button>
+                <button className="solid-btn" disabled={busy || !selectedFolderId} onClick={createEntryForSelectedFolder}>
+                  + {tt("New Entry")}
+                </button>
+              </div>
+            </div>
+
+            <p className="section-label">{tt("Recordings & Entries").toUpperCase()}</p>
+            <div className="entry-list">
+              {selectedFolderEntries.length === 0 ? (
+                <div className="entry-card empty">{tt("Select an entry to work on recording and AI tasks.")}</div>
+              ) : (
+                selectedFolderEntries.map((entry) => (
+                  <button key={entry.id} className="entry-card" onClick={() => void onSelectEntry(entry.id)}>
+                    <span className="play-badge">▶</span>
+                    <span className="entry-meta">
+                      <strong>{entry.title}</strong>
+                      <small>{formatShortDate(entry.created_at)}</small>
+                    </span>
+                    <span className="entry-arrow">→</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </section>
+        ) : (
+          <section className="entry-view">
+            <div className="recording-card">
+              <button
+                className="start-circle"
+                disabled={busy || Boolean(recordingSessionId) || transcribingAfterStop || sources.length === 0}
+                onClick={() => {
+                  runTask(async () => {
+                    const sessionId = await api.startRecording(activeEntry.id, sources);
+                    setRecordingSessionId(sessionId);
+                    setRecordingPaused(false);
+                  }, tt("Recording started"));
+                }}
               >
-                {tt("Status")}: {recordingSessionId ? tt("recording") : tt(activeEntry.status)}
-                {recordingPaused ? ` (${tt("paused")})` : ""}
-                {transcribingAfterStop ? ` (${tt("transcribing")})` : ""}
-              </p>
-              <p>{tt("Duration")}: {activeEntry.duration_sec}s</p>
-
-              <div className="source-controls">
-                  <div className="source-icon-row">
+                🎙
+              </button>
+              <div className="recording-copy">
+                <h2>{tt("Start Recording")}</h2>
+                <p>{tt("Record browser/app audio using screen share.")}</p>
+              </div>
+              <div className="recording-inline-actions">
+                {recordingSessionId ? (
+                  <>
                     <button
-                      className="icon-only"
-                      title={tt("Refresh devices")}
-                      aria-label={tt("Refresh devices")}
-                      disabled={busy}
-                      onClick={() =>
-                        runTask(async () => {
-                          await loadRecordingDevices();
-                        }, tt("Audio devices refreshed"))
-                      }
-                    >
-                      <Icon name="refresh" />
-                    </button>
-                    <button
-                      className="icon-only"
-                      title={tt("Add source")}
-                      aria-label={tt("Add source")}
-                      disabled={busy || recordingDevices.length === 0}
+                      className="outline-btn"
+                      disabled={busy || transcribingAfterStop}
                       onClick={() => {
-                        const used = new Set(sources.map((source) => sourceKey(source)));
-                        const candidate =
-                          recordingDevices.find(
-                            (device) => device.is_loopback && !used.has(deviceKey(device))
-                          ) ??
-                          recordingDevices.find((device) => !used.has(deviceKey(device))) ??
-                          recordingDevices[0];
-                        if (!candidate) {
+                        if (!recordingSessionId) {
                           return;
                         }
-                        setSources([...sources, sourceFromDevice(candidate)]);
+                        runTask(
+                          async () => {
+                            await api.setRecordingPaused(recordingSessionId, !recordingPaused);
+                            setRecordingPaused((value) => !value);
+                          },
+                          recordingPaused ? tt("Recording resumed") : tt("Recording paused")
+                        );
                       }}
                     >
-                      <Icon name="entry-plus" />
+                      {recordingPaused ? tt("Resume") : tt("Pause")}
                     </button>
-                  </div>
-                  {sources.map((source, index) => (
-                    <div className="source-row" key={`${source.label}-${index}`}>
+                    <button
+                      className="solid-btn"
+                      disabled={busy || transcribingAfterStop}
+                      onClick={async () => {
+                        if (!recordingSessionId) {
+                          return;
+                        }
+                        const sessionId = recordingSessionId;
+                        setBusy(true);
+                        setError(null);
+                        setNotice(null);
+                        try {
+                          await api.stopRecording(sessionId);
+                          setRecordingSessionId(null);
+                          setRecordingPaused(false);
+                          await reloadBootstrap(true);
+                          setNotice(tt("Recording stopped. Transcribing..."));
+                        } catch (taskError) {
+                          const message = taskError instanceof Error ? taskError.message : String(taskError);
+                          setError(message);
+                          setBusy(false);
+                          return;
+                        } finally {
+                          setBusy(false);
+                        }
+
+                        setTranscribingAfterStop(true);
+                        try {
+                          await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
+                          await reloadBootstrap(true);
+                          await loadEntryBundle(activeEntry.id);
+                          setNotice(tt("Recording stopped and transcribed"));
+                        } catch (taskError) {
+                          const message = taskError instanceof Error ? taskError.message : String(taskError);
+                          setNotice(null);
+                          setError(message);
+                        } finally {
+                          setTranscribingAfterStop(false);
+                        }
+                      }}
+                    >
+                      {tt("Stop Recording")}
+                    </button>
+                  </>
+                ) : (
+                  <span className="idle-pill">{tt("Ready")}</span>
+                )}
+              </div>
+            </div>
+
+            {(recordingSessionId || transcribingAfterStop) && (
+              <div className="recording-monitor">
+                <p className="recording-live">
+                  {recordingSessionId ? tt("Recording in progress") : tt("Transcribing latest recording")}
+                </p>
+                {recordingSessionId && (
+                  <>
+                    <div className="meter-strip" aria-label={tt("Recording signal meter")}>
+                      {meterBars.map((bar, index) => (
+                        <span
+                          key={`bar-${index}`}
+                          className="meter-bar"
+                          style={{ height: `${Math.round(8 + bar * 34)}px` }}
+                        />
+                      ))}
+                    </div>
+                    <p className="help-text">
+                      {tt("Signal level")}: {Math.round(recordingLevel * 100)}% | {tt("Captured")}:{" "}
+                      {formatBytes(recordingBytes)}
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="tab-card">
+              <div className="tab-strip">
+                <button
+                  className={detailTab === "transcript" ? "tab-btn active" : "tab-btn"}
+                  onClick={() => setDetailTab("transcript")}
+                >
+                  {tt("Transcript")}
+                </button>
+                <button
+                  className={detailTab === "summary" ? "tab-btn active" : "tab-btn"}
+                  onClick={() => setDetailTab("summary")}
+                >
+                  {tt("Summary")}
+                </button>
+                <button
+                  className={detailTab === "analysis" ? "tab-btn active" : "tab-btn"}
+                  onClick={() => setDetailTab("analysis")}
+                >
+                  {tt("Analysis")}
+                </button>
+                <button
+                  className={detailTab === "critique" ? "tab-btn active" : "tab-btn"}
+                  onClick={() => setDetailTab("critique")}
+                >
+                  {tt("Critique")}
+                </button>
+              </div>
+
+              <div className="tab-toolbar">
+                {detailTab === "transcript" ? (
+                  <>
+                    <p>{tt("Live transcription will appear here after recording.")}</p>
+                    <div className="toolbar-actions">
                       <select
-                        value={sourceKey(source)}
-                        onChange={(event) => {
-                          const selected = recordingDevices.find(
-                            (device) => deviceKey(device) === event.target.value
-                          );
-                          if (!selected) {
-                            return;
-                          }
-                          const next = [...sources];
-                          next[index] = sourceFromDevice(selected);
-                          setSources(next);
-                        }}
-                        disabled={busy || recordingDevices.length === 0}
+                        value={transcriptionLanguage}
+                        disabled={busy || Boolean(recordingSessionId)}
+                        onChange={(event) => setTranscriptionLanguage(event.target.value)}
                       >
-                        {recordingDevices.map((device) => (
-                          <option key={deviceKey(device)} value={deviceKey(device)}>
-                            {device.name}
+                        {TRANSCRIPTION_LANGUAGES.map((language) => (
+                          <option key={language.value} value={language.value}>
+                            {tt(language.label)}
                           </option>
                         ))}
                       </select>
                       <button
-                        className="icon-only"
-                        title={tt("Remove source")}
-                        aria-label={tt("Remove source")}
-                        disabled={busy || sources.length <= 1}
-                        onClick={() => setSources(sources.filter((_, i) => i !== index))}
+                        className="outline-btn"
+                        disabled={!canRunPostRecordingActions || busy}
+                        onClick={() =>
+                          runTask(
+                            async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
+                            tt("Transcription ready")
+                          )
+                        }
                       >
-                        <Icon name="remove" />
+                        🎙 {tt("Re-Transcribe")}
                       </button>
                     </div>
-                  ))}
-              </div>
-
-              <div className="record-action-row">
-                <div className="recording-controls">
-                  {!recordingSessionId ? (
-                    <button
-                      className="record-button"
-                      title={tt("Start recording")}
-                      aria-label={tt("Start recording")}
-                      disabled={busy || transcribingAfterStop || sources.length === 0}
-                      onClick={() => {
-                        runTask(async () => {
-                          const sessionId = await api.startRecording(activeEntry.id, sources);
-                          setRecordingSessionId(sessionId);
-                          setRecordingPaused(false);
-                        }, tt("Recording started"));
-                      }}
-                    >
-                      <span className="record-dot" />
-                    </button>
-                  ) : (
-                    <>
-                      {!recordingPaused ? (
-                        <button
-                          disabled={busy || transcribingAfterStop}
-                          onClick={() => {
-                            if (!recordingSessionId) {
-                              return;
-                            }
-                            runTask(
-                              async () => {
-                                await api.setRecordingPaused(recordingSessionId, true);
-                                setRecordingPaused(true);
-                              },
-                              tt("Recording paused")
-                            );
-                          }}
+                  </>
+                ) : (
+                  <>
+                    <p>{tt("Generate artifact from latest transcript and refine manually if needed.")}</p>
+                    <div className="toolbar-actions">
+                      {detailTab === "critique" && (
+                        <select
+                          value={critiqueType}
+                          onChange={(event) => setCritiqueType(event.target.value as ArtifactType)}
+                          disabled={!canRunPostRecordingActions || busy}
                         >
-                          {tt("Pause")}
-                        </button>
-                      ) : (
-                        <button
-                          disabled={busy || transcribingAfterStop}
-                          onClick={() => {
-                            if (!recordingSessionId) {
-                              return;
-                            }
-                            runTask(
-                              async () => {
-                                await api.setRecordingPaused(recordingSessionId, false);
-                                setRecordingPaused(false);
-                              },
-                              tt("Recording resumed")
-                            );
-                          }}
-                        >
-                          {tt("Resume")}
-                        </button>
+                          {CRITIQUE_ACTIONS.map((item) => (
+                            <option key={item.type} value={item.type}>
+                              {tt(item.label)}
+                            </option>
+                          ))}
+                        </select>
                       )}
                       <button
-                        disabled={busy || transcribingAfterStop}
-                        onClick={async () => {
-                          if (!recordingSessionId) {
-                            return;
-                          }
-                          const sessionId = recordingSessionId;
-                          setBusy(true);
-                          setError(null);
-                          setNotice(null);
-                          try {
-                            await api.stopRecording(sessionId);
-                            setRecordingSessionId(null);
-                            setRecordingPaused(false);
-                            await reloadBootstrap(true);
-                            setNotice(tt("Recording stopped. Transcribing..."));
-                          } catch (taskError) {
-                            const message = taskError instanceof Error ? taskError.message : String(taskError);
-                            setError(message);
-                            setBusy(false);
-                            return;
-                          } finally {
-                            setBusy(false);
-                          }
-
-                          setTranscribingAfterStop(true);
-                          try {
-                            await api.transcribeEntry(activeEntry.id, transcriptionLanguage);
-                            await reloadBootstrap(true);
-                            await loadEntryBundle(activeEntry.id);
-                            setNotice(tt("Recording stopped and transcribed"));
-                          } catch (taskError) {
-                            const message = taskError instanceof Error ? taskError.message : String(taskError);
-                            setNotice(null);
-                            setError(message);
-                          } finally {
-                            setTranscribingAfterStop(false);
-                          }
-                        }}
+                        className="outline-btn"
+                        disabled={!canRunPostRecordingActions || busy}
+                        onClick={() =>
+                          runTask(
+                            async () => api.generateArtifact(activeEntry.id, activeArtifactType),
+                            `${artifactLabel(activeArtifactType)} ${tt("completed")}`
+                          )
+                        }
                       >
-                        {tt("Stop Recording")}
+                        {tt("Generate")}
                       </button>
-                    </>
-                  )}
-                </div>
-
-                <div className="action-row post-actions">
-                  <button
-                    disabled={!canRunPostRecordingActions || busy}
-                    onClick={() =>
-                      runTask(
-                        async () => api.transcribeEntry(activeEntry.id, transcriptionLanguage),
-                        tt("Transcription ready")
-                      )
-                    }
-                  >
-                    {tt("Transcribe")}
-                  </button>
-                  <button
-                    disabled={!canRunPostRecordingActions || busy}
-                    onClick={() =>
-                      runTask(
-                        async () => api.generateArtifact(activeEntry.id, "summary"),
-                        tt("Summarize completed")
-                      )
-                    }
-                  >
-                    {tt("Summarize")}
-                  </button>
-                  <button
-                    disabled={!canRunPostRecordingActions || busy}
-                    onClick={() =>
-                      runTask(
-                        async () => api.generateArtifact(activeEntry.id, "analysis"),
-                        tt("Analyze completed")
-                      )
-                    }
-                  >
-                    {tt("Analyze")}
-                  </button>
-                  <div className="inline-select-action">
-                    <select
-                      value={critiqueType}
-                      onChange={(event) => setCritiqueType(event.target.value as ArtifactType)}
-                      disabled={!canRunPostRecordingActions || busy}
-                    >
-                      {CRITIQUE_ACTIONS.map((item) => (
-                        <option key={item.type} value={item.type}>
-                          {tt(item.label)}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      disabled={!canRunPostRecordingActions || busy}
-                      onClick={() =>
-                        runTask(
-                          async () => api.generateArtifact(activeEntry.id, critiqueType),
-                          `${artifactLabel(critiqueType)} ${tt("completed")}`
-                        )
-                      }
-                    >
-                      {tt("Critique")}
-                    </button>
-                  </div>
-                  <button
-                    disabled={!canRunPostRecordingActions || busy}
-                    onClick={() => {
-                      runTask(async () => {
-                        const path = await api.exportEntry(activeEntry.id);
-                        setNotice(`${tt("Export created at")} ${path}`);
-                      });
-                    }}
-                  >
-                    {tt("Export")}
-                  </button>
-                </div>
+                    </div>
+                  </>
+                )}
               </div>
 
-              {(recordingSessionId || transcribingAfterStop) && (
-                <div className="recording-monitor">
-                  <p className="recording-live">
-                    {recordingSessionId ? tt("Recording in progress") : tt("Transcribing latest recording")}
-                  </p>
-                  {recordingSessionId && (
-                    <>
-                      <div className="meter-strip" aria-label={tt("Recording signal meter")}>
-                        {meterBars.map((bar, index) => (
-                          <span
-                            key={`bar-${index}`}
-                            className="meter-bar"
-                            style={{ height: `${Math.round(8 + bar * 34)}px` }}
-                          />
-                        ))}
-                      </div>
-                      <p className="help-text">
-                        {tt("Signal level")}: {Math.round(recordingLevel * 100)}% | {tt("Captured")}:{" "}
-                        {formatBytes(recordingBytes)}
-                      </p>
-                    </>
-                  )}
-                </div>
-              )}
+              <div className="tab-editor">
+                {detailTab === "transcript" ? (
+                  <textarea
+                    className="large-text"
+                    value={transcriptDraft}
+                    onChange={(event) => setTranscriptDraft(event.target.value)}
+                    placeholder={tt("Transcript goes here... You can paste it manually or use auto-transcription.")}
+                  />
+                ) : (
+                  <textarea
+                    className="large-text"
+                    value={artifactDrafts[activeArtifactType]}
+                    onChange={(event) =>
+                      setArtifactDrafts({ ...artifactDrafts, [activeArtifactType]: event.target.value })
+                    }
+                    placeholder={`${tt("Draft")} ${artifactLabel(activeArtifactType).toLowerCase()}...`}
+                  />
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
-              <h3>{tt("Transcript")}</h3>
-              <label>
-                {tt("Transcription Language")}
-                <select
-                  value={transcriptionLanguage}
-                  disabled={busy || Boolean(recordingSessionId)}
-                  onChange={(event) => setTranscriptionLanguage(event.target.value)}
-                >
-                  {TRANSCRIPTION_LANGUAGES.map((language) => (
-                    <option key={language.value} value={language.value}>
-                      {tt(language.label)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {latestTranscript && (
-                <p className="help-text">
-                  {tt("Version")} {latestTranscript.version} | {tt("Language")}: {latestTranscript.language} |{" "}
-                  {tt("Updated")}:{" "}
-                  {formatDate(latestTranscript.created_at)}
-                </p>
-              )}
-              <textarea
-                className="large-text"
-                value={transcriptDraft}
-                onChange={(event) => setTranscriptDraft(event.target.value)}
-                placeholder={tt("Transcript text")}
-              />
-              <button
-                disabled={busy || !activeEntry}
-                onClick={() => {
-                  const language = transcriptionLanguage || latestTranscript?.language || "auto";
-                  runTask(
-                    async () => api.updateTranscript(activeEntry.id, transcriptDraft, language),
-                    tt("Transcript saved")
-                  );
-                }}
-              >
-                {tt("Save Transcript")}
+        {showSettings && (
+          <section className="settings-drawer">
+            <div className="panel-heading">
+              <h2>{tt("Local Model & Prompt Settings")}</h2>
+              <button className="ghost-icon" onClick={() => setShowSettings(false)}>
+                ✕
               </button>
-
-              {visibleArtifactTypes.length > 0 && (
-                <>
-                  <h3>{tt("Artifacts")}</h3>
-                  {visibleArtifactTypes.map((item) => {
-                    const latestArtifact = entryBundle
-                      ? latestByType(entryBundle.artifact_revisions, item.type)
-                      : undefined;
-                    return (
-                      <div key={item.type} className="artifact-block">
-                        <p>
-                          <strong>{tt(item.label)}</strong>
-                        </p>
-                        {latestArtifact && (
-                          <p className="help-text">
-                            v{latestArtifact.version} | {tt("Transcript").toLowerCase()} v
-                            {latestArtifact.source_transcript_version}
-                            {latestArtifact.is_stale ? ` | ${tt("stale")}` : ""}
-                          </p>
-                        )}
-                        <textarea
-                          className="medium-text"
-                          value={artifactDrafts[item.type]}
-                          onChange={(event) =>
-                            setArtifactDrafts({ ...artifactDrafts, [item.type]: event.target.value })
-                          }
-                        />
-                        <button
-                          disabled={busy}
-                          onClick={() =>
-                            runTask(
-                              async () =>
-                                api.updateArtifact(activeEntry.id, item.type, artifactDrafts[item.type]),
-                              `${tt(item.label)} ${tt("saved")}`
-                            )
-                          }
-                        >
-                          {tt("Save")} {tt(item.label)}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </>
-              )}
-            </>
-          )}
-        </section>
+            </div>
+            <label>
+              {tt("Interface Language")}
+              <select value={uiLanguage} onChange={(event) => setUiLanguage(event.target.value as "en" | "ru")}>
+                <option value="en">{tt("English")}</option>
+                <option value="ru">{tt("Russian")}</option>
+              </select>
+            </label>
+            <label>
+              {tt("Ollama Model Name")}
+              <input value={modelName} onChange={(event) => setModelName(event.target.value)} />
+            </label>
+            <button
+              className="outline-btn"
+              disabled={busy}
+              onClick={() => runTask(async () => api.updateModelName(modelName), tt("Model name updated"))}
+            >
+              {tt("Save Model")}
+            </button>
+            <label>
+              {tt("Whisper Model")}
+              <select value={whisperModel} onChange={(event) => setWhisperModel(event.target.value)}>
+                {whisperModelChoices.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="outline-btn"
+              disabled={busy}
+              onClick={() => runTask(async () => api.updateWhisperModel(whisperModel), tt("Whisper model updated"))}
+            >
+              {tt("Save Whisper Model")}
+            </button>
+          </section>
+        )}
       </main>
     </div>
   );
