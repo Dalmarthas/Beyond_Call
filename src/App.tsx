@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./lib/api";
+import beyondLogo from "./assets/beyond-logo.jpg";
 import type {
   ArtifactRevision,
   ArtifactType,
@@ -956,7 +957,7 @@ export default function App() {
       <aside className="redesign-sidebar">
         <div className="brand-block">
           <div className="brand-mic" aria-hidden="true">
-            <Icon name="mic" />
+            <img className="brand-logo-image" src={beyondLogo} alt="" />
           </div>
           <div>
             <p className="brand-title">Beyond</p>
