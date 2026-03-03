@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./lib/api";
-import beyondLogo from "./assets/beyond-logo.jpg";
+import beyondLogo from "./assets/beyond-logo.png";
 import type {
   ArtifactRevision,
   ArtifactType,
