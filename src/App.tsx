@@ -177,6 +177,7 @@ const RU_TRANSLATIONS: Record<string, string> = {
   "Audio device detection timed out. You can still use the app and retry refresh.":
     "Истекло время ожидания определения аудиоустройств. Вы можете продолжить работу и обновить позже.",
   "AI backend is not ready yet:": "AI-бэкенд пока не готов:",
+  "AI Prompts": "AI Промпты",
   "Export created at": "Экспорт создан в",
   "updated": "обновлено",
   "Save Summary Prompt": "Сохранить промпт для Саммари",
@@ -185,6 +186,14 @@ const RU_TRANSLATIONS: Record<string, string> = {
   "Save Transcript": "Сохранить транскрипт",
   completed: "завершено",
   saved: "сохранено",
+  Summary: "Саммари",
+  Analysis: "Анализ",
+  Ready: "Готово",
+  Home: "Главная",
+  "Model Settings": "Настройки моделей",
+  "Prompt Templates": "Шаблоны промптов",
+  "No deleted folders": "Удаленных папок нет",
+  "No deleted entries": "Удаленных записей нет",
   "turbo | large-v3 | ggml-base.bin | /path/to/model.bin":
     "turbo | large-v3 | ggml-base.bin | /путь/к/модели.bin",
   new: "новая"
@@ -940,6 +949,7 @@ export default function App() {
 
   const activeArtifactType: ArtifactType =
     detailTab === "summary" ? "summary" : detailTab === "analysis" ? "analysis" : critiqueType;
+  const sourceControlsDisabled = busy || Boolean(recordingSessionId) || transcribingAfterStop;
 
   return (
     <div className="redesign-shell">
@@ -949,8 +959,8 @@ export default function App() {
             <Icon name="mic" />
           </div>
           <div>
-            <p className="brand-title">Vocalize</p>
-            <p className="brand-subtitle">LOCAL INTELLIGENCE</p>
+            <p className="brand-title">Beyond</p>
+            <p className="brand-subtitle">AI SCRIBE</p>
           </div>
         </div>
 
@@ -989,18 +999,32 @@ export default function App() {
           </ul>
         </div>
 
-        <button
-          className="sidebar-footer-btn"
-          onClick={() => {
-            setShowSettings((current) => !current);
-            setShowTrash(false);
-          }}
-        >
-          <span className="gear-symbol" aria-hidden="true">
-            <Icon name="settings" />
-          </span>
-          <span>{tt("AI Prompts")}</span>
-        </button>
+        <div className="sidebar-footer-stack">
+          <button
+            className="sidebar-footer-btn"
+            onClick={() => {
+              setShowTrash((current) => !current);
+              setShowSettings(false);
+            }}
+          >
+            <span className="gear-symbol" aria-hidden="true">
+              <Icon name="trash" />
+            </span>
+            <span>{tt("Trash")}</span>
+          </button>
+          <button
+            className="sidebar-footer-btn"
+            onClick={() => {
+              setShowSettings((current) => !current);
+              setShowTrash(false);
+            }}
+          >
+            <span className="gear-symbol" aria-hidden="true">
+              <Icon name="settings" />
+            </span>
+            <span>{tt("AI Prompts")}</span>
+          </button>
+        </div>
       </aside>
 
       <main className="redesign-main">
@@ -1068,7 +1092,10 @@ export default function App() {
                 className="ghost-icon"
                 title={tt("Settings")}
                 aria-label={tt("Settings")}
-                onClick={() => setShowSettings((current) => !current)}
+                onClick={() => {
+                  setShowSettings((current) => !current);
+                  setShowTrash(false);
+                }}
               >
                 <Icon name="more" />
               </button>
@@ -1143,6 +1170,87 @@ export default function App() {
                 <p>{tt("Record browser/app audio using screen share.")}</p>
               </div>
               <div className="recording-inline-actions">
+                {!recordingSessionId && (
+                  <div className="source-inline-controls">
+                    <div className="source-inline-toolbar">
+                      <button
+                        className="ghost-icon source-mini-btn"
+                        title={tt("Refresh devices")}
+                        aria-label={tt("Refresh devices")}
+                        disabled={sourceControlsDisabled}
+                        onClick={() =>
+                          runTask(async () => {
+                            await loadRecordingDevices();
+                          }, tt("Audio devices refreshed"))
+                        }
+                      >
+                        <Icon name="refresh" />
+                      </button>
+                      <button
+                        className="ghost-icon source-mini-btn"
+                        title={tt("Add source")}
+                        aria-label={tt("Add source")}
+                        disabled={sourceControlsDisabled || recordingDevices.length === 0}
+                        onClick={() => {
+                          const used = new Set(sources.map((source) => sourceKey(source)));
+                          const candidate =
+                            recordingDevices.find(
+                              (device) => device.is_loopback && !used.has(deviceKey(device))
+                            ) ??
+                            recordingDevices.find((device) => !used.has(deviceKey(device))) ??
+                            recordingDevices[0];
+                          if (!candidate) {
+                            return;
+                          }
+                          setSources([...sources, sourceFromDevice(candidate)]);
+                        }}
+                      >
+                        <Icon name="plus" />
+                      </button>
+                    </div>
+                    <div className="source-inline-list">
+                      {sources.map((source, index) => (
+                        <div className="source-inline-row" key={`${source.format}-${source.input}-${index}`}>
+                          <select
+                            className="source-inline-select"
+                            value={sourceKey(source)}
+                            onChange={(event) => {
+                              const selected = recordingDevices.find(
+                                (device) => deviceKey(device) === event.target.value
+                              );
+                              if (!selected) {
+                                return;
+                              }
+                              const next = [...sources];
+                              next[index] = sourceFromDevice(selected);
+                              setSources(next);
+                            }}
+                            disabled={sourceControlsDisabled || recordingDevices.length === 0}
+                          >
+                            {recordingDevices.length > 0 ? (
+                              recordingDevices.map((device) => (
+                                <option key={deviceKey(device)} value={deviceKey(device)}>
+                                  {device.name}
+                                </option>
+                              ))
+                            ) : (
+                              <option value={sourceKey(source)}>{source.label}</option>
+                            )}
+                          </select>
+                          <button
+                            className="ghost-icon source-mini-btn"
+                            title={tt("Remove source")}
+                            aria-label={tt("Remove source")}
+                            disabled={sourceControlsDisabled || sources.length <= 1}
+                            onClick={() => setSources(sources.filter((_, i) => i !== index))}
+                          >
+                            <Icon name="remove" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {recordingSessionId ? (
                   <>
                     <button
@@ -1370,44 +1478,181 @@ export default function App() {
             <div className="panel-heading">
               <h2>{tt("Local Model & Prompt Settings")}</h2>
               <button className="ghost-icon" onClick={() => setShowSettings(false)}>
-                ✕
+                <Icon name="remove" />
               </button>
             </div>
-            <label>
-              {tt("Interface Language")}
-              <select value={uiLanguage} onChange={(event) => setUiLanguage(event.target.value as "en" | "ru")}>
-                <option value="en">{tt("English")}</option>
-                <option value="ru">{tt("Russian")}</option>
-              </select>
-            </label>
-            <label>
-              {tt("Ollama Model Name")}
-              <input value={modelName} onChange={(event) => setModelName(event.target.value)} />
-            </label>
-            <button
-              className="outline-btn"
-              disabled={busy}
-              onClick={() => runTask(async () => api.updateModelName(modelName), tt("Model name updated"))}
-            >
-              {tt("Save Model")}
-            </button>
-            <label>
-              {tt("Whisper Model")}
-              <select value={whisperModel} onChange={(event) => setWhisperModel(event.target.value)}>
-                {whisperModelChoices.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className="outline-btn"
-              disabled={busy}
-              onClick={() => runTask(async () => api.updateWhisperModel(whisperModel), tt("Whisper model updated"))}
-            >
-              {tt("Save Whisper Model")}
-            </button>
+            <div className="settings-section">
+              <h3>{tt("Model Settings")}</h3>
+              <label className="settings-field">
+                <span>{tt("Interface Language")}</span>
+                <select value={uiLanguage} onChange={(event) => setUiLanguage(event.target.value as "en" | "ru")}>
+                  <option value="en">{tt("English")}</option>
+                  <option value="ru">{tt("Russian")}</option>
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>{tt("Ollama Model Name")}</span>
+                <input value={modelName} onChange={(event) => setModelName(event.target.value)} />
+              </label>
+              <button
+                className="outline-btn settings-action-btn"
+                disabled={busy}
+                onClick={() => runTask(async () => api.updateModelName(modelName), tt("Model name updated"))}
+              >
+                {tt("Save Model")}
+              </button>
+              <label className="settings-field">
+                <span>{tt("Whisper Model")}</span>
+                <select value={whisperModel} onChange={(event) => setWhisperModel(event.target.value)}>
+                  {whisperModelChoices.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="settings-action-row">
+                <button
+                  className="outline-btn settings-action-btn"
+                  disabled={busy}
+                  onClick={() =>
+                    runTask(async () => api.updateWhisperModel(whisperModel), tt("Whisper model updated"))
+                  }
+                >
+                  {tt("Save Whisper Model")}
+                </button>
+                <button
+                  className="outline-btn settings-action-btn"
+                  disabled={busy}
+                  onClick={() =>
+                    runTask(async () => {
+                      const models = await api.listWhisperModels();
+                      setWhisperModelOptions(Array.from(new Set([whisperModel, ...models])));
+                    }, tt("Whisper models refreshed"))
+                  }
+                >
+                  {tt("Refresh Whisper Models")}
+                </button>
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <h3>{tt("Prompt Templates")}</h3>
+              <div className="settings-block">
+                <p>{tt(SUMMARY_PROMPT.label)}</p>
+                <textarea
+                  className="settings-textarea"
+                  value={promptDrafts[SUMMARY_PROMPT.role]}
+                  onChange={(event) =>
+                    setPromptDrafts({ ...promptDrafts, [SUMMARY_PROMPT.role]: event.target.value })
+                  }
+                />
+                <button
+                  className="outline-btn settings-action-btn"
+                  disabled={busy}
+                  onClick={() =>
+                    runTask(
+                      async () => api.updatePrompt(SUMMARY_PROMPT.role, promptDrafts[SUMMARY_PROMPT.role]),
+                      tt("Summary Prompt updated")
+                    )
+                  }
+                >
+                  {tt("Save Summary Prompt")}
+                </button>
+              </div>
+
+              {CRITIQUE_ROLES.map((item) => (
+                <div className="settings-block" key={item.role}>
+                  <p>{tt(item.label)}</p>
+                  <textarea
+                    className="settings-textarea"
+                    value={promptDrafts[item.role]}
+                    onChange={(event) => setPromptDrafts({ ...promptDrafts, [item.role]: event.target.value })}
+                  />
+                  <button
+                    className="outline-btn settings-action-btn"
+                    disabled={busy}
+                    onClick={() =>
+                      runTask(
+                        async () => api.updatePrompt(item.role, promptDrafts[item.role]),
+                        `${tt(item.label)} ${tt("updated")}`
+                      )
+                    }
+                  >
+                    {tt("Save Prompt")}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {showTrash && (
+          <section className="settings-drawer trash-drawer">
+            <div className="panel-heading">
+              <h2>{tt("Trash")}</h2>
+              <button className="ghost-icon" onClick={() => setShowTrash(false)}>
+                <Icon name="remove" />
+              </button>
+            </div>
+            <div className="trash-grid">
+              <div className="settings-block">
+                <p>{tt("Folders")}</p>
+                {trashedFolders.length === 0 ? (
+                  <small>{tt("No deleted folders")}</small>
+                ) : (
+                  trashedFolders.map((folder) => (
+                    <div className="trash-row" key={folder.id}>
+                      <span>{folder.name}</span>
+                      <div className="trash-row-actions">
+                        <button
+                          className="outline-btn settings-action-btn"
+                          disabled={busy}
+                          onClick={() => runTask(async () => api.restoreFromTrash("folder", folder.id))}
+                        >
+                          {tt("Restore")}
+                        </button>
+                        <button
+                          className="outline-btn settings-action-btn danger-outline"
+                          disabled={busy}
+                          onClick={() => runTask(async () => api.purgeEntity("folder", folder.id))}
+                        >
+                          {tt("Purge")}
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="settings-block">
+                <p>{tt("Entries")}</p>
+                {trashedEntries.length === 0 ? (
+                  <small>{tt("No deleted entries")}</small>
+                ) : (
+                  trashedEntries.map((entry) => (
+                    <div className="trash-row" key={entry.id}>
+                      <span>{entry.title}</span>
+                      <div className="trash-row-actions">
+                        <button
+                          className="outline-btn settings-action-btn"
+                          disabled={busy}
+                          onClick={() => runTask(async () => api.restoreFromTrash("entry", entry.id))}
+                        >
+                          {tt("Restore")}
+                        </button>
+                        <button
+                          className="outline-btn settings-action-btn danger-outline"
+                          disabled={busy}
+                          onClick={() => runTask(async () => api.purgeEntity("entry", entry.id))}
+                        >
+                          {tt("Purge")}
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </section>
         )}
       </main>
