@@ -199,7 +199,19 @@ type IconName =
   | "refresh"
   | "remove"
   | "folder"
-  | "entry";
+  | "entry"
+  | "mic"
+  | "plus"
+  | "chevron-right"
+  | "arrow-right"
+  | "arrow-left"
+  | "play"
+  | "save"
+  | "more"
+  | "file-text"
+  | "sparkles"
+  | "brain"
+  | "target";
 
 function Icon({ name }: { name: IconName }) {
   switch (name) {
@@ -257,6 +269,85 @@ function Icon({ name }: { name: IconName }) {
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M19 8a8 8 0 1 0 2 5.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
           <path d="M19 3v5h-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "mic":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="9" y="3.5" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M6.5 11.5a5.5 5.5 0 1 0 11 0M12 17v3.5M9 20.5h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "plus":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "chevron-right":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "arrow-right":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "arrow-left":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M19 12H5M11 6l-6 6 6 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "play":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 7.8v8.4a.7.7 0 0 0 1.06.6l6.8-4.2a.7.7 0 0 0 0-1.2l-6.8-4.2a.7.7 0 0 0-1.06.6z" fill="currentColor" />
+        </svg>
+      );
+    case "save":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 4h11l3 3v12a1.8 1.8 0 0 1-1.8 1.8H6.8A1.8 1.8 0 0 1 5 19V4z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+          <path d="M8 4v6h8V5.2M8.5 20v-5h7v5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case "more":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="6" r="1.5" fill="currentColor" />
+          <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+          <circle cx="12" cy="18" r="1.5" fill="currentColor" />
+        </svg>
+      );
+    case "file-text":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M14 3v4h4M9 12h6M9 16h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      );
+    case "sparkles":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 4l1.7 4.3L18 10l-4.3 1.7L12 16l-1.7-4.3L6 10l4.3-1.7L12 4zM18.5 15l.9 2.2 2.1.9-2.1.9-.9 2.2-.9-2.2-2.1-.9 2.1-.9.9-2.2zM5.5 14l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6-1.6-.7 1.6-.7.7-1.6z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+        </svg>
+      );
+    case "brain":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8.3 5a3.3 3.3 0 0 0-3.3 3.3c0 .8.3 1.6.8 2.2a3.8 3.8 0 0 0 1 7.4h.5a3 3 0 0 0 4.8 2.4V10.1A5.1 5.1 0 0 0 8.3 5zm7.4 0a3.3 3.3 0 0 1 3.3 3.3c0 .8-.3 1.6-.8 2.2a3.8 3.8 0 0 1-1 7.4h-.5a3 3 0 0 1-4.8 2.4V10.1A5.1 5.1 0 0 1 15.7 5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        </svg>
+      );
+    case "target":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.3" fill="none" stroke="currentColor" strokeWidth="1.6" />
+          <circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+          <circle cx="12" cy="12" r="1.6" fill="currentColor" />
         </svg>
       );
     default:
@@ -854,7 +945,9 @@ export default function App() {
     <div className="redesign-shell">
       <aside className="redesign-sidebar">
         <div className="brand-block">
-          <div className="brand-mic">◉</div>
+          <div className="brand-mic" aria-hidden="true">
+            <Icon name="mic" />
+          </div>
           <div>
             <p className="brand-title">Vocalize</p>
             <p className="brand-subtitle">LOCAL INTELLIGENCE</p>
@@ -871,7 +964,7 @@ export default function App() {
               aria-label={tt("Add folder")}
               onClick={createFolderFromCurrentSelection}
             >
-              +
+              <Icon name="plus" />
             </button>
           </div>
 
@@ -903,7 +996,9 @@ export default function App() {
             setShowTrash(false);
           }}
         >
-          <span className="gear-symbol">⚙</span>
+          <span className="gear-symbol" aria-hidden="true">
+            <Icon name="settings" />
+          </span>
           <span>{tt("AI Prompts")}</span>
         </button>
       </aside>
@@ -913,7 +1008,9 @@ export default function App() {
           {!activeEntry ? (
             <div className="crumb-row">
               <span>{tt("Home")}</span>
-              <span className="crumb-sep">→</span>
+              <span className="crumb-sep" aria-hidden="true">
+                <Icon name="chevron-right" />
+              </span>
               <span>{selectedFolder?.name ?? tt("Workspace")}</span>
             </div>
           ) : (
@@ -925,15 +1022,20 @@ export default function App() {
                   setEntryBundle(null);
                 }}
               >
-                ←
+                <Icon name="arrow-left" />
               </button>
               <strong>{activeEntry.title}</strong>
             </div>
           )}
 
           {!activeEntry ? (
-            <button className="outline-btn" disabled={busy || !selectedFolderId} onClick={createEntryForSelectedFolder}>
-              ⏺ {tt("Record Call")}
+            <button
+              className="outline-btn record-call-btn"
+              disabled={busy || !selectedFolderId}
+              onClick={createEntryForSelectedFolder}
+            >
+              <Icon name="mic" />
+              {tt("Record Call")}
             </button>
           ) : (
             <div className="top-actions">
@@ -959,10 +1061,16 @@ export default function App() {
                   );
                 }}
               >
+                <Icon name="save" />
                 {tt("Save")}
               </button>
-              <button className="ghost-icon" onClick={() => setShowSettings((current) => !current)}>
-                ⋮
+              <button
+                className="ghost-icon"
+                title={tt("Settings")}
+                aria-label={tt("Settings")}
+                onClick={() => setShowSettings((current) => !current)}
+              >
+                <Icon name="more" />
               </button>
             </div>
           )}
@@ -986,7 +1094,8 @@ export default function App() {
                   {tt("New Folder")}
                 </button>
                 <button className="solid-btn" disabled={busy || !selectedFolderId} onClick={createEntryForSelectedFolder}>
-                  + {tt("New Entry")}
+                  <Icon name="plus" />
+                  {tt("New Entry")}
                 </button>
               </div>
             </div>
@@ -998,12 +1107,16 @@ export default function App() {
               ) : (
                 selectedFolderEntries.map((entry) => (
                   <button key={entry.id} className="entry-card" onClick={() => void onSelectEntry(entry.id)}>
-                    <span className="play-badge">▶</span>
+                    <span className="play-badge" aria-hidden="true">
+                      <Icon name="play" />
+                    </span>
                     <span className="entry-meta">
                       <strong>{entry.title}</strong>
                       <small>{formatShortDate(entry.created_at)}</small>
                     </span>
-                    <span className="entry-arrow">→</span>
+                    <span className="entry-arrow" aria-hidden="true">
+                      <Icon name="arrow-right" />
+                    </span>
                   </button>
                 ))
               )}
@@ -1023,7 +1136,7 @@ export default function App() {
                   }, tt("Recording started"));
                 }}
               >
-                🎙
+                <Icon name="mic" />
               </button>
               <div className="recording-copy">
                 <h2>{tt("Start Recording")}</h2>
@@ -1131,24 +1244,28 @@ export default function App() {
                   className={detailTab === "transcript" ? "tab-btn active" : "tab-btn"}
                   onClick={() => setDetailTab("transcript")}
                 >
+                  <Icon name="file-text" />
                   {tt("Transcript")}
                 </button>
                 <button
                   className={detailTab === "summary" ? "tab-btn active" : "tab-btn"}
                   onClick={() => setDetailTab("summary")}
                 >
+                  <Icon name="sparkles" />
                   {tt("Summary")}
                 </button>
                 <button
                   className={detailTab === "analysis" ? "tab-btn active" : "tab-btn"}
                   onClick={() => setDetailTab("analysis")}
                 >
+                  <Icon name="brain" />
                   {tt("Analysis")}
                 </button>
                 <button
                   className={detailTab === "critique" ? "tab-btn active" : "tab-btn"}
                   onClick={() => setDetailTab("critique")}
                 >
+                  <Icon name="target" />
                   {tt("Critique")}
                 </button>
               </div>
@@ -1179,7 +1296,8 @@ export default function App() {
                           )
                         }
                       >
-                        🎙 {tt("Re-Transcribe")}
+                        <Icon name="mic" />
+                        {tt("Re-Transcribe")}
                       </button>
                     </div>
                   </>
@@ -1210,6 +1328,13 @@ export default function App() {
                           )
                         }
                       >
+                        {detailTab === "summary" ? (
+                          <Icon name="sparkles" />
+                        ) : detailTab === "analysis" ? (
+                          <Icon name="brain" />
+                        ) : (
+                          <Icon name="target" />
+                        )}
                         {tt("Generate")}
                       </button>
                     </div>

@@ -1,6 +1,8 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap");
+
 :root {
   color-scheme: light;
-  --bg: #f4f4f5;
+  --bg: #f6f6f7;
   --panel: #ffffff;
   --line: #e5e5e8;
   --line-strong: #d7d7dc;
@@ -16,9 +18,20 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "SF Pro Display", "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-family: "Inter", "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
   color: var(--ink);
   background: var(--bg);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.brand-title,
+.detail-head-left strong {
+  font-family: "Plus Jakarta Sans", "Inter", "SF Pro Display", sans-serif;
 }
 
 button,
@@ -59,8 +72,12 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
   box-shadow: 0 6px 14px rgba(16, 16, 20, 0.12);
+}
+
+.brand-mic svg {
+  width: 17px;
+  height: 17px;
 }
 
 .brand-title {
@@ -115,11 +132,16 @@ textarea {
   text-align: left;
   cursor: pointer;
   color: #2f2f34;
+  transition: background 0.18s ease, border-color 0.18s ease;
 }
 
 .workspace-item.active {
   background: #ececef;
   border-color: #ececef;
+}
+
+.workspace-item:hover:not(:disabled) {
+  background: #efeff1;
 }
 
 .workspace-icon {
@@ -151,7 +173,16 @@ textarea {
 }
 
 .gear-symbol {
-  font-size: 15px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gear-symbol svg {
+  width: 16px;
+  height: 16px;
 }
 
 .redesign-main {
@@ -182,6 +213,16 @@ textarea {
 
 .crumb-sep {
   color: #b0b0b8;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.crumb-sep svg {
+  width: 13px;
+  height: 13px;
 }
 
 .detail-head-left {
@@ -208,11 +249,18 @@ textarea {
   justify-content: center;
   padding: 0 8px;
   cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
 }
 
 .ghost-icon:hover:not(:disabled) {
   border-color: var(--line);
   background: #f0f0f2;
+}
+
+.workspace-heading .ghost-icon {
+  min-width: 30px;
+  height: 30px;
+  border-radius: 8px;
 }
 
 .outline-btn,
@@ -225,6 +273,14 @@ textarea {
   gap: 8px;
   cursor: pointer;
   font-weight: 600;
+  transition: transform 0.15s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.outline-btn svg,
+.solid-btn svg,
+.ghost-icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 .outline-btn {
@@ -233,10 +289,23 @@ textarea {
   color: #1a1a21;
 }
 
+.outline-btn:hover:not(:disabled) {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(16, 16, 20, 0.08);
+}
+
 .solid-btn {
   border: 1px solid #0f1117;
   background: #11131a;
   color: #ffffff;
+}
+
+.solid-btn:hover:not(:disabled) {
+  background: #191b24;
+}
+
+.record-call-btn svg {
+  color: #df4f58;
 }
 
 .outline-btn:disabled,
@@ -306,6 +375,13 @@ textarea {
   text-align: left;
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(16, 16, 20, 0.03);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.entry-card:hover:not(.empty) {
+  border-color: #dbdbe0;
+  box-shadow: 0 6px 16px rgba(16, 16, 20, 0.06);
+  transform: translateY(-1px);
 }
 
 .entry-card.empty {
@@ -324,6 +400,11 @@ textarea {
   align-items: center;
   justify-content: center;
   font-size: 14px;
+}
+
+.play-badge svg {
+  width: 15px;
+  height: 15px;
 }
 
 .entry-meta {
@@ -345,7 +426,22 @@ textarea {
 .entry-arrow {
   margin-left: auto;
   color: #cbcbcf;
-  font-size: 22px;
+  width: 21px;
+  height: 21px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.entry-arrow svg {
+  width: 20px;
+  height: 20px;
+}
+
+.entry-card:hover .entry-arrow {
+  color: #8b8b92;
+  transform: translateX(3px);
 }
 
 .recording-card {
@@ -366,11 +462,20 @@ textarea {
   border: 1px solid #0f1117;
   background: #101218;
   color: #ffffff;
-  font-size: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: transform 0.15s ease, background 0.18s ease;
+}
+
+.start-circle:hover:not(:disabled) {
+  background: #171924;
+}
+
+.start-circle svg {
+  width: 26px;
+  height: 26px;
 }
 
 .recording-copy h2 {
@@ -456,13 +561,22 @@ textarea {
   color: #75757f;
   font-weight: 600;
   padding: 10px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease;
 }
 
 .tab-btn.active {
   border-color: var(--line);
   background: #ffffff;
   color: #121218;
+}
+
+.tab-btn svg {
+  width: 15px;
+  height: 15px;
 }
 
 .tab-toolbar {
@@ -501,7 +615,7 @@ textarea {
 }
 
 .large-text {
-  min-height: 270px;
+  min-height: 300px;
   resize: vertical;
 }
 
