@@ -543,6 +543,16 @@ textarea {
   gap: 6px;
 }
 
+.source-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.source-hints .help-text {
+  margin: 0;
+}
+
 .source-inline-row {
   display: flex;
   align-items: center;

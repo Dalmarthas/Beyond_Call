@@ -42,13 +42,19 @@ struct AppState {
     db_path: PathBuf,
 }
 
-struct RecordingSession {
-    entry_id: String,
+struct RecordingProcess {
     output_path: PathBuf,
     native_microphone_path: Option<PathBuf>,
-    existing_path: Option<PathBuf>,
     child: Child,
     telemetry: Arc<Mutex<RecordingTelemetry>>,
+}
+
+struct RecordingSession {
+    entry_id: String,
+    sources: Vec<RecordingSource>,
+    source_analysis: RecordingSourceAnalysis,
+    existing_path: Option<PathBuf>,
+    process: Option<RecordingProcess>,
     paused: bool,
 }
 
@@ -794,6 +800,221 @@ fn spawn_recording_telemetry(stderr: impl std::io::Read + Send + 'static, teleme
     });
 }
 
+fn recording_start_failure_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Check recording source format/input values and macOS microphone/screen-audio permissions."
+    } else if cfg!(target_os = "windows") {
+        "Check source format/input values and Windows microphone privacy settings plus loopback routing (VB-CABLE/Stereo Mix)."
+    } else {
+        "Check recording source format/input values and audio permissions for this platform."
+    }
+}
+
+fn recording_runtime_failure_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Ensure microphone/screen-audio permissions are granted and audio is actively playing during capture."
+    } else if cfg!(target_os = "windows") {
+        "Ensure microphone privacy access is allowed and loopback routing (VB-CABLE/Stereo Mix) is configured with active playback."
+    } else {
+        "Ensure audio permissions and source routing are configured and audio is actively playing during capture."
+    }
+}
+
+fn spawn_recording_process(
+    helper_data_dir: &Path,
+    entry_directory: &Path,
+    sources: &[RecordingSource],
+    source_analysis: RecordingSourceAnalysis,
+    has_existing_path: bool,
+) -> Result<RecordingProcess, String> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = helper_data_dir;
+
+    let segment_stamp = unix_now();
+    let (output_path, native_microphone_path) = recording_output_paths(
+        entry_directory,
+        has_existing_path,
+        source_analysis.native_with_microphone,
+        segment_stamp,
+    );
+
+    let mut child = if source_analysis.has_native_system_source {
+        #[cfg(target_os = "macos")]
+        {
+            let helper_binary = ensure_sck_recorder_binary(helper_data_dir)?;
+            let mut command = Command::new(helper_binary);
+            command.arg("--output");
+            command.arg(output_path.to_string_lossy().to_string());
+            if let Some(path) = &native_microphone_path {
+                command.arg("--with-microphone");
+                command.arg("--microphone-output");
+                command.arg(path.to_string_lossy().to_string());
+            }
+            command.stdin(Stdio::piped());
+            command.stdout(Stdio::null());
+            command.stderr(Stdio::piped());
+            command
+                .spawn()
+                .map_err(|e| format!("Failed to start ScreenCaptureKit recorder: {e}"))?
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            unreachable!("Native system source is only available on macOS");
+        }
+    } else {
+        let mut command = Command::new("ffmpeg");
+        command.arg("-y");
+        command.arg("-nostats");
+        command.arg("-progress");
+        command.arg("pipe:2");
+
+        for source in sources {
+            command.arg("-f");
+            command.arg(&source.format);
+            command.arg("-i");
+            command.arg(&source.input);
+        }
+
+        let filter_graph = ffmpeg_recording_filter_graph(sources.len());
+        command.arg("-filter_complex");
+        command.arg(filter_graph);
+        command.arg("-map");
+        command.arg("[mout]");
+
+        command.arg("-ac");
+        command.arg("1");
+        command.arg("-ar");
+        command.arg("16000");
+        command.arg(output_path.to_string_lossy().to_string());
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::piped());
+
+        command
+            .spawn()
+            .map_err(|e| format!("Failed to start ffmpeg recording: {e}"))?
+    };
+
+    let telemetry = Arc::new(Mutex::new(RecordingTelemetry::default()));
+    if let Some(stderr) = child.stderr.take() {
+        spawn_recording_telemetry(stderr, Arc::clone(&telemetry));
+    }
+
+    // If the recorder exits immediately, surface a clear error instead of creating a dead session.
+    thread::sleep(Duration::from_millis(350));
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|e| format!("Failed to inspect recorder process status: {e}"))?
+    {
+        if source_analysis.has_native_system_source {
+            let details = telemetry
+                .lock()
+                .ok()
+                .and_then(|state| state.last_error.clone())
+                .unwrap_or_else(|| "no additional details".to_string());
+            return Err(format!(
+                "Native system recording failed to start (status {status}). \
+Grant \"Screen & System Audio Recording\" permission to this app/terminal in macOS Privacy settings and retry. Details: {details}"
+            ));
+        }
+        return Err(format!(
+            "Recording failed to start (ffmpeg exited with status {status}). {}",
+            recording_start_failure_hint()
+        ));
+    }
+
+    Ok(RecordingProcess {
+        output_path,
+        native_microphone_path,
+        child,
+        telemetry,
+    })
+}
+
+fn finalize_active_recording_process(session: &mut RecordingSession) -> Result<(), String> {
+    let Some(mut process) = session.process.take() else {
+        return Ok(());
+    };
+
+    if let Some(mut stdin) = process.child.stdin.take() {
+        let _ = stdin.write_all(b"q\n");
+    }
+
+    wait_for_recorder_shutdown(&mut process.child);
+
+    let recorder_error = process
+        .telemetry
+        .lock()
+        .ok()
+        .and_then(|state| state.last_error.clone());
+
+    let run_output_path = process.output_path.clone();
+
+    if let Some(mic_path) = &process.native_microphone_path {
+        if run_output_path.exists() && mic_path.exists() {
+            let mixed_path = run_output_path
+                .parent()
+                .unwrap_or(run_output_path.as_path())
+                .join(format!("mixed-{}.wav", unix_now()));
+            mix_audio_tracks(&run_output_path, mic_path, &mixed_path)?;
+            let _ = fs::remove_file(&run_output_path);
+            fs::rename(&mixed_path, &run_output_path)
+                .map_err(|e| format!("Failed to finalize mixed native recording: {e}"))?;
+            let _ = fs::remove_file(mic_path);
+        } else if mic_path.exists() && !run_output_path.exists() {
+            return Err("Microphone stream recorded but system stream is missing. Retry recording and ensure system audio is actively playing.".to_string());
+        }
+    }
+
+    let run_file_size = fs::metadata(&run_output_path).map(|meta| meta.len()).unwrap_or(0);
+    if run_output_path.exists() && run_file_size > 64 {
+        let existing_valid = session
+            .existing_path
+            .as_ref()
+            .filter(|path| path.exists())
+            .cloned();
+
+        if let Some(existing) = existing_valid {
+            if existing != run_output_path {
+                let merged = existing
+                    .parent()
+                    .unwrap_or(existing.as_path())
+                    .join(format!("merged-{}.wav", unix_now()));
+                concat_recordings(&existing, &run_output_path, &merged)?;
+                let _ = fs::remove_file(&existing);
+                fs::rename(&merged, &existing)
+                    .map_err(|e| format!("Failed to finalize merged recording: {e}"))?;
+                let _ = fs::remove_file(&run_output_path);
+            }
+            session.existing_path = Some(existing);
+        } else {
+            session.existing_path = Some(run_output_path.clone());
+        }
+        return Ok(());
+    }
+
+    if run_output_path.exists() {
+        // Empty/near-empty segment: drop it and preserve previous recording when available.
+        let _ = fs::remove_file(&run_output_path);
+    }
+
+    let has_existing = session
+        .existing_path
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    if has_existing {
+        return Ok(());
+    }
+
+    if let Some(details) = recorder_error {
+        return Err(format!("Recording file was not created. Native recorder error: {details}"));
+    }
+
+    // No completed segment yet (for example, immediate pause). Keep session alive.
+    Ok(())
+}
+
 fn wait_for_recorder_shutdown(child: &mut Child) {
     for _ in 0..30 {
         match child.try_wait() {
@@ -861,30 +1082,6 @@ fn mix_audio_tracks(first: &Path, second: &Path, output: &Path) -> Result<(), St
     Ok(())
 }
 
-fn set_process_paused(pid: u32, paused: bool) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        let signal = if paused { "-STOP" } else { "-CONT" };
-        let status = Command::new("kill")
-            .arg(signal)
-            .arg(pid.to_string())
-            .status()
-            .map_err(|e| format!("Failed to send pause signal: {e}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err("Failed to update recording pause state".to_string())
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        let _ = paused;
-        Err("Pause/resume is currently supported on macOS/Linux only".to_string())
-    }
-}
-
 fn resolve_whisper_model_path(base_data_dir: &Path, preferred_model: Option<&str>) -> Result<PathBuf, String> {
     let min_model_bytes = 10 * 1024 * 1024_u64;
     let cwd = std::env::current_dir().ok();
@@ -897,7 +1094,7 @@ fn resolve_whisper_model_path(base_data_dir: &Path, preferred_model: Option<&str
             .map_err(|e| format!("Failed to inspect whisper model at {}: {e}", path.display()))?;
         if metadata.len() < min_model_bytes {
             return Err(format!(
-                "Whisper model at {} looks invalid ({} bytes). Install a real model with `bash scripts/macos/install-whisper-model.sh`.",
+                "Whisper model at {} looks invalid ({} bytes). Install a valid ggml model file and retry.",
                 path.display(),
                 metadata.len()
             ));
@@ -911,7 +1108,7 @@ fn resolve_whisper_model_path(base_data_dir: &Path, preferred_model: Option<&str
             return;
         }
         let direct = PathBuf::from(trimmed);
-        if direct.is_absolute() || trimmed.contains('/') {
+        if direct.is_absolute() || trimmed.contains('/') || trimmed.contains('\\') {
             candidates.push(direct);
             return;
         }
@@ -947,7 +1144,7 @@ fn resolve_whisper_model_path(base_data_dir: &Path, preferred_model: Option<&str
     }
 
     Err(
-        "No valid whisper model found. Set WHISPER_MODEL_PATH or place ggml-base.bin / ggml-tiny.bin (or *.en variants) in ./models/ (install via `bash scripts/macos/install-whisper-model.sh`).".to_string(),
+        "No valid whisper model found. Set WHISPER_MODEL_PATH or place ggml-base.bin / ggml-tiny.bin (or *.en variants) in ./models/.".to_string(),
     )
 }
 
@@ -1401,105 +1598,152 @@ fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
     Ok(devices)
 }
 
-#[tauri::command]
-fn list_audio_device_hints() -> Result<Vec<String>, String> {
-    if !find_executable("ffmpeg") {
-        let mut hints = Vec::new();
-        if native_system_recording_device().is_some() {
-            hints.push(
-                "Native system source available: select \"System Audio (macOS Native)\" for ScreenCaptureKit-based capture."
-                    .to_string(),
-            );
-        }
-        hints.push("ffmpeg not found in PATH".to_string());
-        return Ok(hints);
-    }
-
-    let output = if cfg!(target_os = "macos") {
-        Command::new("ffmpeg")
-            .arg("-f")
-            .arg("avfoundation")
-            .arg("-list_devices")
-            .arg("true")
-            .arg("-i")
-            .arg("")
-            .output()
-            .map_err(|e| format!("Failed to query ffmpeg avfoundation devices: {e}"))?
-    } else if cfg!(target_os = "windows") {
-        Command::new("ffmpeg")
-            .arg("-list_devices")
-            .arg("true")
-            .arg("-f")
-            .arg("dshow")
-            .arg("-i")
-            .arg("dummy")
-            .output()
-            .map_err(|e| format!("Failed to query ffmpeg dshow devices: {e}"))?
-    } else {
-        Command::new("ffmpeg")
-            .arg("-sources")
-            .arg("pulse")
-            .output()
-            .map_err(|e| format!("Failed to query ffmpeg audio sources: {e}"))?
-    };
-
-    let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
-    let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
-    let joined = format!("{stderr_text}\n{stdout_text}");
-
+fn build_audio_device_hints(
+    devices: &[RecordingDevice],
+    ffmpeg_available: bool,
+    has_native_source: bool,
+) -> Vec<String> {
     let mut hints = Vec::new();
-    for line in joined.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let is_macos_audio_index =
-            cfg!(target_os = "macos") && trimmed.contains("AVFoundation indev") && trimmed.contains("] [");
-        if trimmed.contains("AVFoundation audio devices")
-            || trimmed.contains("AVFoundation input device")
-            || trimmed.contains("DirectShow audio devices")
-            || trimmed.contains("Alternative name")
-            || is_macos_audio_index
-            || (cfg!(target_os = "windows") && trimmed.contains("]  \""))
-        {
-            hints.push(trimmed.to_string());
-        }
-    }
 
-    if hints.is_empty() {
-        hints.push("No parsed devices found. Run `ffmpeg` device list manually for this platform.".to_string());
-    }
-
-    if native_system_recording_device().is_some() {
-        hints.insert(
-            0,
+    if has_native_source {
+        hints.push(
             "Native system source available: select \"System Audio (macOS Native)\" for ScreenCaptureKit-based capture."
                 .to_string(),
         );
     }
 
-    Ok(hints)
+    if !ffmpeg_available {
+        hints.push("ffmpeg not found in PATH. Install ffmpeg and restart the app.".to_string());
+        if cfg!(target_os = "windows") {
+            hints.push(
+                "No loopback source detected automatically. Enable Stereo Mix or install VB-CABLE to capture system audio on Windows."
+                    .to_string(),
+            );
+        }
+        return hints;
+    }
+
+    if devices.is_empty() {
+        hints.push(
+            "No recording devices detected. Verify microphone/loopback devices in system settings, then refresh."
+                .to_string(),
+        );
+        return hints;
+    }
+
+    let mut seen_names = BTreeSet::new();
+    let mut ordered_names = Vec::new();
+    for device in devices {
+        let trimmed = device.name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let normalized = trimmed.to_ascii_lowercase();
+        if seen_names.insert(normalized) {
+            ordered_names.push(trimmed.to_string());
+        }
+    }
+
+    let loopback_count = devices.iter().filter(|device| device.is_loopback).count();
+    if cfg!(target_os = "windows") {
+        if loopback_count == 0 {
+            hints.push(
+                "No loopback source detected. Enable Stereo Mix or install VB-CABLE to capture app/system audio on Windows."
+                    .to_string(),
+            );
+            hints.push("You can still record microphone-only by selecting a non-loopback source.".to_string());
+        } else {
+            hints.push(
+                "Tip: use one loopback source for system audio and one microphone source for full-call capture."
+                    .to_string(),
+            );
+        }
+    } else if cfg!(target_os = "macos") && has_native_source {
+        hints.push(
+            "Tip: select \"System Audio (macOS Native)\" plus one microphone source for full-call capture."
+                .to_string(),
+        );
+    }
+
+    if !ordered_names.is_empty() {
+        let preview: Vec<String> = ordered_names.iter().take(4).cloned().collect();
+        hints.push(format!("Detected devices: {}", preview.join(", ")));
+        let hidden_count = ordered_names.len().saturating_sub(preview.len());
+        if hidden_count > 0 {
+            hints.push(format!("{hidden_count} additional device(s) available in the source selector."));
+        }
+    }
+
+    hints
+}
+
+#[tauri::command]
+fn list_audio_device_hints() -> Result<Vec<String>, String> {
+    let ffmpeg_available = find_executable("ffmpeg");
+    let has_native_source = native_system_recording_device().is_some();
+
+    let devices = if ffmpeg_available {
+        match list_recording_devices() {
+            Ok(items) => items,
+            Err(error) => {
+                let mut hints = build_audio_device_hints(&[], true, has_native_source);
+                hints.push(format!("Device query failed: {error}"));
+                return Ok(hints);
+            }
+        }
+    } else {
+        native_system_recording_device().into_iter().collect()
+    };
+
+    Ok(build_audio_device_hints(
+        &devices,
+        ffmpeg_available,
+        has_native_source,
+    ))
 }
 
 #[tauri::command]
 fn recording_meter(session_id: String, state: State<'_, AppState>) -> Result<RecordingMeter, String> {
-    let (output_path, telemetry) = {
+    let (active_output_path, existing_path, telemetry) = {
         let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
         let session = sessions
             .get(&session_id)
             .ok_or_else(|| "Recording session not found".to_string())?;
-        (session.output_path.clone(), Arc::clone(&session.telemetry))
+        (
+            session.process.as_ref().map(|process| process.output_path.clone()),
+            session.existing_path.clone(),
+            session
+                .process
+                .as_ref()
+                .map(|process| Arc::clone(&process.telemetry)),
+        )
     };
 
-    let file_bytes = fs::metadata(&output_path).map(|meta| meta.len()).unwrap_or(0);
-    let mut state = telemetry.lock().map_err(|e| e.to_string())?;
-    if file_bytes > state.bytes_written {
-        state.bytes_written = file_bytes;
+    let file_bytes = active_output_path
+        .as_ref()
+        .and_then(|path| fs::metadata(path).ok().map(|meta| meta.len()))
+        .or_else(|| {
+            existing_path
+                .as_ref()
+                .and_then(|path| fs::metadata(path).ok().map(|meta| meta.len()))
+        })
+        .unwrap_or(0);
+
+    if let Some(telemetry) = telemetry {
+        let mut state = telemetry.lock().map_err(|e| e.to_string())?;
+        if file_bytes > state.bytes_written {
+            state.bytes_written = file_bytes;
+        }
+        return Ok(RecordingMeter {
+            bytes_written: state.bytes_written,
+            level: state.level,
+        });
     }
 
     Ok(RecordingMeter {
-        bytes_written: state.bytes_written,
-        level: state.level,
+        bytes_written: file_bytes,
+        level: 0.0,
     })
 }
 
@@ -1877,106 +2121,21 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
             }
         });
 
-    // ffmpeg is required for the non-native capture path, for native append concatenation,
+    // ffmpeg is required for the non-native capture path, for append concatenation,
     // and for native system+microphone final mixing.
-    let has_existing_path = existing_path.is_some();
+    let has_existing_path = existing_path.as_ref().map(|path| path.exists()).unwrap_or(false);
     let requires_ffmpeg = source_analysis.requires_ffmpeg(has_existing_path);
     if requires_ffmpeg && !find_executable("ffmpeg") {
         return Err("ffmpeg not found in PATH. Install ffmpeg to enable this recording mode.".to_string());
     }
 
-    let segment_stamp = unix_now();
-    let (output_path, native_microphone_path) = recording_output_paths(
+    let process = spawn_recording_process(
+        &base_data_dir,
         &entry_directory,
+        &sources,
+        source_analysis,
         has_existing_path,
-        source_analysis.native_with_microphone,
-        segment_stamp,
-    );
-
-    let mut child = if source_analysis.has_native_system_source {
-        #[cfg(target_os = "macos")]
-        {
-            let helper_binary = ensure_sck_recorder_binary(&base_data_dir)?;
-            let mut command = Command::new(helper_binary);
-            command.arg("--output");
-            command.arg(output_path.to_string_lossy().to_string());
-            if let Some(path) = &native_microphone_path {
-                command.arg("--with-microphone");
-                command.arg("--microphone-output");
-                command.arg(path.to_string_lossy().to_string());
-            }
-            command.stdin(Stdio::piped());
-            command.stdout(Stdio::null());
-            command.stderr(Stdio::piped());
-            command
-                .spawn()
-                .map_err(|e| format!("Failed to start ScreenCaptureKit recorder: {e}"))?
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            unreachable!("Native system source is only available on macOS");
-        }
-    } else {
-        let mut command = Command::new("ffmpeg");
-        command.arg("-y");
-        command.arg("-nostats");
-        command.arg("-progress");
-        command.arg("pipe:2");
-
-        for source in &sources {
-            command.arg("-f");
-            command.arg(&source.format);
-            command.arg("-i");
-            command.arg(&source.input);
-        }
-
-        let filter_graph = ffmpeg_recording_filter_graph(sources.len());
-        command.arg("-filter_complex");
-        command.arg(filter_graph);
-        command.arg("-map");
-        command.arg("[mout]");
-
-        command.arg("-ac");
-        command.arg("1");
-        command.arg("-ar");
-        command.arg("16000");
-        command.arg(output_path.to_string_lossy().to_string());
-        command.stdin(Stdio::piped());
-        command.stdout(Stdio::null());
-        command.stderr(Stdio::piped());
-
-        command
-            .spawn()
-            .map_err(|e| format!("Failed to start ffmpeg recording: {e}"))?
-    };
-
-    let telemetry = Arc::new(Mutex::new(RecordingTelemetry::default()));
-    if let Some(stderr) = child.stderr.take() {
-        spawn_recording_telemetry(stderr, Arc::clone(&telemetry));
-    }
-
-    // If the recorder exits immediately, surface a clear error instead of creating a dead session.
-    thread::sleep(Duration::from_millis(350));
-    if let Some(status) = child
-        .try_wait()
-        .map_err(|e| format!("Failed to inspect recorder process status: {e}"))?
-    {
-        if source_analysis.has_native_system_source {
-            let details = telemetry
-                .lock()
-                .ok()
-                .and_then(|state| state.last_error.clone())
-                .unwrap_or_else(|| "no additional details".to_string());
-            return Err(format!(
-                "Native system recording failed to start (status {status}). \
-Grant \"Screen & System Audio Recording\" permission to this app/terminal in macOS Privacy settings and retry. Details: {details}"
-            ));
-        }
-        return Err(format!(
-            "Recording failed to start (ffmpeg exited with status {status}). \
-Check recording source format/input values and macOS microphone permissions."
-        ));
-    }
+    )?;
 
     conn.execute(
         "UPDATE entries SET status = 'recording', updated_at = ?1 WHERE id = ?2",
@@ -1990,11 +2149,10 @@ Check recording source format/input values and macOS microphone permissions."
         session_id.clone(),
         RecordingSession {
             entry_id,
-            output_path,
-            native_microphone_path,
+            sources,
+            source_analysis,
             existing_path,
-            child,
-            telemetry,
+            process: Some(process),
             paused: false,
         },
     );
@@ -2008,79 +2166,18 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
     let mut session = sessions
         .remove(&session_id)
         .ok_or_else(|| "Recording session not found".to_string())?;
+    drop(sessions);
 
-    if session.paused {
-        let pid = session.child.id();
-        set_process_paused(pid, false)?;
-        session.paused = false;
+    if session.process.is_some() {
+        finalize_active_recording_process(&mut session)?;
     }
 
-    if let Some(mut stdin) = session.child.stdin.take() {
-        let _ = stdin.write_all(b"q\n");
-    }
-
-    wait_for_recorder_shutdown(&mut session.child);
-    let recorder_error = session
-        .telemetry
-        .lock()
-        .ok()
-        .and_then(|state| state.last_error.clone());
-
-    let db = db_path(&state)?;
-    let conn = connection(&db)?;
-    let run_output_path = session.output_path.clone();
-
-    if let Some(mic_path) = &session.native_microphone_path {
-        if run_output_path.exists() && mic_path.exists() {
-            let mixed_path = run_output_path
-                .parent()
-                .unwrap_or(run_output_path.as_path())
-                .join(format!("mixed-{}.wav", unix_now()));
-            mix_audio_tracks(&run_output_path, mic_path, &mixed_path)?;
-            let _ = fs::remove_file(&run_output_path);
-            fs::rename(&mixed_path, &run_output_path)
-                .map_err(|e| format!("Failed to finalize mixed native recording: {e}"))?;
-            let _ = fs::remove_file(mic_path);
-        } else if mic_path.exists() && !run_output_path.exists() {
-            return Err("Microphone stream recorded but system stream is missing. Retry recording and ensure system audio is actively playing.".to_string());
-        }
-    }
-
-    let final_path = if let Some(existing) = &session.existing_path {
-        if run_output_path.exists() {
-            if existing.exists() {
-                let merged = existing
-                    .parent()
-                    .unwrap_or(existing.as_path())
-                    .join(format!("merged-{}.wav", unix_now()));
-                concat_recordings(existing, &run_output_path, &merged)?;
-                let _ = fs::remove_file(existing);
-                fs::rename(&merged, existing)
-                    .map_err(|e| format!("Failed to finalize merged recording: {e}"))?;
-                let _ = fs::remove_file(&run_output_path);
-                existing.clone()
-            } else {
-                run_output_path.clone()
-            }
-        } else if existing.exists() {
-            // No new segment was produced; preserve previously recorded audio.
-            existing.clone()
-        } else {
-            if let Some(details) = recorder_error {
-                return Err(format!("Recording file was not created. Native recorder error: {details}"));
-            }
-            return Err("Recording file was not created. Ensure system/audio permissions are granted and that audio is actively playing during capture.".to_string());
-        }
-    } else {
-        if run_output_path.exists() {
-            run_output_path.clone()
-        } else {
-            if let Some(details) = recorder_error {
-                return Err(format!("Recording file was not created. Native recorder error: {details}"));
-            }
-            return Err("Recording file was not created. Ensure system/audio permissions are granted and that audio is actively playing during capture.".to_string());
-        }
-    };
+    let final_path = session
+        .existing_path
+        .as_ref()
+        .filter(|path| path.exists())
+        .cloned()
+        .ok_or_else(|| format!("Recording file was not created. {}", recording_runtime_failure_hint()))?;
 
     let file_size = fs::metadata(&final_path).map(|meta| meta.len()).unwrap_or(0);
     if file_size <= 64 {
@@ -2093,6 +2190,8 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
     let recording_path = final_path.to_string_lossy().to_string();
     let duration_sec = probe_duration_seconds(&recording_path);
 
+    let db = db_path(&state)?;
+    let conn = connection(&db)?;
     conn.execute(
         "UPDATE entries
          SET status = 'recorded', recording_path = ?1, duration_sec = ?2, updated_at = ?3
@@ -2106,17 +2205,49 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
 
 #[tauri::command]
 fn set_recording_paused(session_id: String, paused: bool, state: State<'_, AppState>) -> Result<(), String> {
+    let base_data_dir = data_dir(&state)?;
+
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| "Recording session not found".to_string())?;
+
     if session.paused == paused {
         return Ok(());
     }
 
-    let pid = session.child.id();
-    set_process_paused(pid, paused)?;
-    session.paused = paused;
+    if paused {
+        finalize_active_recording_process(session)?;
+        session.paused = true;
+        return Ok(());
+    }
+
+    if session.process.is_some() {
+        session.paused = false;
+        return Ok(());
+    }
+
+    let entry_directory = ensure_entry_dirs(&base_data_dir, &session.entry_id)?;
+    let has_existing_path = session
+        .existing_path
+        .as_ref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
+    let requires_ffmpeg = session.source_analysis.requires_ffmpeg(has_existing_path);
+    if requires_ffmpeg && !find_executable("ffmpeg") {
+        return Err("ffmpeg not found in PATH. Install ffmpeg to enable this recording mode.".to_string());
+    }
+
+    let process = spawn_recording_process(
+        &base_data_dir,
+        &entry_directory,
+        &session.sources,
+        session.source_analysis,
+        has_existing_path,
+    )?;
+
+    session.process = Some(process);
+    session.paused = false;
     Ok(())
 }
 
@@ -2800,4 +2931,51 @@ mod tests {
             Some("haitian creole".to_string())
         );
     }
+
+    #[test]
+    fn parse_windows_recording_devices_extracts_unique_audio_inputs() {
+        let output = r#"
+[dshow @ 000001] DirectShow audio devices
+[dshow @ 000001]  "Microphone (USB Audio Device)"
+[dshow @ 000001]  "Stereo Mix (Realtek Audio)"
+[dshow @ 000001]     Alternative name "@device_cm_{123}"
+[dshow @ 000001]  "Microphone (USB Audio Device)"
+"#;
+
+        let devices = parse_windows_recording_devices(output);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].name, "Microphone (USB Audio Device)");
+        assert_eq!(devices[0].format, "dshow");
+        assert_eq!(devices[0].input, "audio=Microphone (USB Audio Device)");
+        assert!(!devices[0].is_loopback);
+
+        assert_eq!(devices[1].name, "Stereo Mix (Realtek Audio)");
+        assert!(devices[1].is_loopback);
+    }
+
+    #[test]
+    fn build_audio_device_hints_warns_when_windows_loopback_missing() {
+        let devices = vec![RecordingDevice {
+            name: "Microphone Array".to_string(),
+            format: "dshow".to_string(),
+            input: "audio=Microphone Array".to_string(),
+            is_loopback: false,
+        }];
+
+        let hints = build_audio_device_hints(&devices, true, false);
+        if cfg!(target_os = "windows") {
+            assert!(
+                hints
+                    .iter()
+                    .any(|hint| hint.contains("No loopback source detected"))
+            );
+        } else {
+            assert!(
+                hints
+                    .iter()
+                    .all(|hint| !hint.contains("No loopback source detected"))
+            );
+        }
+    }
+
 }

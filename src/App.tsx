@@ -434,6 +434,7 @@ export default function App() {
   const [sources, setSources] = useState<RecordingSource[]>([]);
   const [transcriptDraft, setTranscriptDraft] = useState<string>("");
   const [recordingDevices, setRecordingDevices] = useState<RecordingDevice[]>([]);
+  const [audioDeviceHints, setAudioDeviceHints] = useState<string[]>([]);
   const [artifactDrafts, setArtifactDrafts] = useState<Record<ArtifactType, string>>({
     summary: "",
     analysis: "",
@@ -823,6 +824,26 @@ export default function App() {
   }
 
   function defaultSourcesFromDevices(devices: RecordingDevice[]): RecordingSource[] {
+    const isWindowsDeviceList = devices.some((device) => device.format === "dshow");
+    if (isWindowsDeviceList) {
+      const preferredLoopback = devices.find((device) => device.is_loopback);
+      const preferredMicLike = devices.find((device) => !device.is_loopback) ?? devices[0];
+      if (
+        preferredLoopback &&
+        preferredMicLike &&
+        deviceKey(preferredLoopback) !== deviceKey(preferredMicLike)
+      ) {
+        return [sourceFromDevice(preferredLoopback), sourceFromDevice(preferredMicLike)];
+      }
+      if (preferredLoopback) {
+        return [sourceFromDevice(preferredLoopback)];
+      }
+      if (preferredMicLike) {
+        return [sourceFromDevice(preferredMicLike)];
+      }
+      return [];
+    }
+
     const nativeSystem = devices.find(
       (device) => device.format === "screencapturekit" && device.input === "system"
     );
@@ -847,13 +868,20 @@ export default function App() {
   }
 
   async function loadRecordingDevices(applyStartupDefaults = false) {
-    const devices = await withTimeout(
-      api.listRecordingDevices(),
-      10000,
-      tt("Audio device detection timed out. You can still use the app and retry refresh.")
-    );
+    const [devices, hints] = await Promise.all([
+      withTimeout(
+        api.listRecordingDevices(),
+        10000,
+        tt("Audio device detection timed out. You can still use the app and retry refresh.")
+      ),
+      api.listAudioDeviceHints().catch(() => [] as string[])
+    ]);
+
     setRecordingDevices(devices);
+    setAudioDeviceHints(hints.slice(0, 8));
+
     if (devices.length === 0) {
+      setSources([]);
       return;
     }
     const startupDefaults = defaultSourcesFromDevices(devices);
@@ -1250,6 +1278,15 @@ export default function App() {
                         </div>
                       ))}
                     </div>
+                    {audioDeviceHints.length > 0 && (
+                      <div className="source-hints">
+                        {audioDeviceHints.map((hint, index) => (
+                          <p className="help-text" key={`hint-${index}`}>
+                            {hint}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
                 {recordingSessionId ? (
