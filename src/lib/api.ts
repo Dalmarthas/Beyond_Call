@@ -5,6 +5,7 @@ import type {
   EntryBundle,
   PromptRole,
   RecordingDevice,
+  RecordingDevicesWithHints,
   RecordingMeter,
   RecordingSource
 } from "./types";
@@ -53,6 +54,8 @@ export const api = {
     invoke<void>("update_whisper_model", { modelName }),
   listRecordingDevices: () => invoke<RecordingDevice[]>("list_recording_devices"),
   listAudioDeviceHints: () => invoke<string[]>("list_audio_device_hints"),
+  listRecordingDevicesWithHints: () =>
+    invoke<RecordingDevicesWithHints>("list_recording_devices_with_hints"),
   exportEntry: (entryId: string) =>
     invoke<string>("export_entry_markdown", { entryId })
 };

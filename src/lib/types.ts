@@ -87,6 +87,11 @@ export interface RecordingDevice {
   is_loopback: boolean;
 }
 
+export interface RecordingDevicesWithHints {
+  devices: RecordingDevice[];
+  hints: string[];
+}
+
 export interface RecordingMeter {
   bytes_written: number;
   level: number;

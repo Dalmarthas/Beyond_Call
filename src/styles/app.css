@@ -517,14 +517,16 @@ textarea {
 .recording-inline-actions {
   margin-left: auto;
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .source-inline-controls {
-  min-width: 460px;
+  min-width: 420px;
   max-width: 620px;
+  flex: 1 1 460px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -551,17 +553,21 @@ textarea {
 
 .source-hints .help-text {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .source-inline-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .source-inline-select {
   height: 38px;
   border-radius: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .source-mini-btn {

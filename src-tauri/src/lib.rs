@@ -155,6 +155,12 @@ struct RecordingMeter {
     level: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecordingDevicesWithHints {
+    devices: Vec<RecordingDevice>,
+    hints: Vec<String>,
+}
+
 fn now_ts() -> String {
     Utc::now().to_rfc3339()
 }
@@ -782,6 +788,13 @@ fn spawn_recording_telemetry(stderr: impl std::io::Read + Send + 'static, teleme
                 continue;
             }
 
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("error") || lower.contains("failed") {
+                if let Ok(mut state) = telemetry.lock() {
+                    state.last_error = Some(line.trim().to_string());
+                }
+            }
+
             if let Some(pos) = line.find("lavfi.astats.Overall.RMS_level=") {
                 let value = &line[(pos + "lavfi.astats.Overall.RMS_level=".len())..];
                 let trimmed = value.trim();
@@ -915,6 +928,16 @@ fn spawn_recording_process(
             return Err(format!(
                 "Native system recording failed to start (status {status}). \
 Grant \"Screen & System Audio Recording\" permission to this app/terminal in macOS Privacy settings and retry. Details: {details}"
+            ));
+        }
+        let details = telemetry
+            .lock()
+            .ok()
+            .and_then(|state| state.last_error.clone());
+        if let Some(details) = details {
+            return Err(format!(
+                "Recording failed to start (ffmpeg exited with status {status}). {} Details: {details}",
+                recording_start_failure_hint()
             ));
         }
         return Err(format!(
@@ -1425,10 +1448,23 @@ fn is_loopback_device_name(name: &str) -> bool {
         "vb-cable",
         "stereo mix",
         "monitor of",
+        "monitor mix",
+        "wave out mix",
+        "what u hear",
+        "wave link stream",
+        "wave link system",
+        "wave link monitor",
     ];
-    loopback_markers
-        .iter()
-        .any(|marker| lower.contains(marker))
+    loopback_markers.iter().any(|marker| lower.contains(marker))
+        || (lower.contains("wave link")
+            && (lower.contains("stream")
+                || lower.contains("system")
+                || lower.contains("monitor")))
+}
+
+fn windows_dshow_audio_input(name: &str) -> String {
+    let escaped = name.replace('"', "\\\"");
+    format!("audio=\"{escaped}\"")
 }
 
 fn parse_macos_recording_devices(joined_output: &str) -> Vec<RecordingDevice> {
@@ -1488,7 +1524,7 @@ fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> 
             in_audio_section = false;
             continue;
         }
-        if !in_audio_section || trimmed.contains("Alternative name") {
+        if trimmed.contains("Alternative name") {
             continue;
         }
 
@@ -1505,6 +1541,37 @@ fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> 
             continue;
         }
 
+        let suffix = remainder[(second_quote + 1)..].trim().to_ascii_lowercase();
+        let has_audio_tag = suffix.contains("(audio)");
+        let has_video_tag = suffix.contains("(video)");
+        let has_none_tag = suffix.contains("(none)");
+        let likely_audio_name = {
+            let lower = name.to_ascii_lowercase();
+            lower.contains("audio")
+                || lower.contains("microphone")
+                || lower.contains("mic")
+                || is_loopback_device_name(name)
+        };
+
+        let is_audio_candidate = if in_audio_section {
+            true
+        } else if has_audio_tag {
+            true
+        } else if has_video_tag {
+            false
+        } else if has_none_tag {
+            likely_audio_name
+        } else if likely_audio_name {
+            // Fallback for ffmpeg builds that omit section/type markers.
+            true
+        } else {
+            false
+        };
+
+        if !is_audio_candidate {
+            continue;
+        }
+
         let exists = devices
             .iter()
             .any(|item: &RecordingDevice| item.name.eq_ignore_ascii_case(name));
@@ -1515,7 +1582,7 @@ fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> 
         devices.push(RecordingDevice {
             name: name.to_string(),
             format: "dshow".to_string(),
-            input: format!("audio={name}"),
+            input: windows_dshow_audio_input(name),
             is_loopback: is_loopback_device_name(name),
         });
     }
@@ -1573,6 +1640,18 @@ fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
     let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
     let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
     let joined = format!("{stderr_text}\n{stdout_text}");
+
+    if cfg!(target_os = "windows") {
+        let lower = joined.to_ascii_lowercase();
+        if lower.contains("unknown input format: 'dshow'")
+            || lower.contains("unknown input format: \"dshow\"")
+        {
+            return Err(
+                "ffmpeg build is missing DirectShow (dshow) support. Install a Windows ffmpeg build with DirectShow enabled."
+                    .to_string(),
+            );
+        }
+    }
 
     let mut devices = if cfg!(target_os = "macos") {
         parse_macos_recording_devices(&joined)
@@ -1653,6 +1732,10 @@ fn build_audio_device_hints(
                     .to_string(),
             );
             hints.push("You can still record microphone-only by selecting a non-loopback source.".to_string());
+            hints.push(
+                "Playback devices (speakers/headphones) are not capturable directly by dshow. Route output through Stereo Mix, VB-CABLE, or Wave Link Stream to capture system audio."
+                    .to_string(),
+            );
         } else {
             hints.push(
                 "Tip: use one loopback source for system audio and one microphone source for full-call capture."
@@ -1701,6 +1784,21 @@ fn list_audio_device_hints() -> Result<Vec<String>, String> {
         ffmpeg_available,
         has_native_source,
     ))
+}
+
+#[tauri::command]
+fn list_recording_devices_with_hints() -> Result<RecordingDevicesWithHints, String> {
+    let ffmpeg_available = find_executable("ffmpeg");
+    let has_native_source = native_system_recording_device().is_some();
+
+    let devices = if ffmpeg_available {
+        list_recording_devices()?
+    } else {
+        native_system_recording_device().into_iter().collect()
+    };
+
+    let hints = build_audio_device_hints(&devices, ffmpeg_available, has_native_source);
+    Ok(RecordingDevicesWithHints { devices, hints })
 }
 
 #[tauri::command]
@@ -2786,6 +2884,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_recording_devices,
             list_audio_device_hints,
+            list_recording_devices_with_hints,
             recording_meter,
             bootstrap_state,
             get_entry_bundle,
@@ -2946,11 +3045,54 @@ mod tests {
         assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].name, "Microphone (USB Audio Device)");
         assert_eq!(devices[0].format, "dshow");
-        assert_eq!(devices[0].input, "audio=Microphone (USB Audio Device)");
+        assert_eq!(devices[0].input, "audio=\"Microphone (USB Audio Device)\"");
         assert!(!devices[0].is_loopback);
 
         assert_eq!(devices[1].name, "Stereo Mix (Realtek Audio)");
         assert!(devices[1].is_loopback);
+    }
+
+    #[test]
+    fn parse_windows_recording_devices_supports_inline_type_markers() {
+        let output = r#"
+[dshow @ 000001] "OBS Virtual Camera" (video)
+[dshow @ 000001] "Game Capture HD60 S Audio" (audio)
+[dshow @ 000001] "USB Microphone" (none)
+[dshow @ 000001] "Integrated Camera" (none)
+"#;
+
+        let devices = parse_windows_recording_devices(output);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].name, "Game Capture HD60 S Audio");
+        assert_eq!(devices[1].name, "USB Microphone");
+        assert!(devices.iter().all(|device| !device.name.contains("Camera")));
+    }
+
+    #[test]
+    fn parse_windows_recording_devices_supports_markerless_audio_names() {
+        let output = r#"
+[dshow @ 000001] "Wave Link Stream (Elgato Wave:3)"
+[dshow @ 000001] "USB Microphone"
+[dshow @ 000001] "OBS Virtual Camera"
+"#;
+
+        let devices = parse_windows_recording_devices(output);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].name, "Wave Link Stream (Elgato Wave:3)");
+        assert_eq!(devices[1].name, "USB Microphone");
+    }
+
+    #[test]
+    fn parse_windows_recording_devices_quotes_colon_names() {
+        let output = r#"
+[dshow @ 000001] "Wave Link Stream (Elgato Wave:3)" (none)
+"#;
+
+        let devices = parse_windows_recording_devices(output);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].name, "Wave Link Stream (Elgato Wave:3)");
+        assert_eq!(devices[0].input, "audio=\"Wave Link Stream (Elgato Wave:3)\"");
+        assert!(devices[0].is_loopback);
     }
 
     #[test]
