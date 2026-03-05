@@ -197,7 +197,7 @@ const RU_TRANSLATIONS: Record<string, string> = {
   "No deleted entries": "Удаленных записей нет",
   "turbo | large-v3 | ggml-base.bin | /path/to/model.bin":
     "turbo | large-v3 | ggml-base.bin | /путь/к/модели.bin",
-  new: "\u043d\u043e\u0432\u0430\u044f",
+  new: "новая",
   "Start Recording": "\u041d\u0430\u0447\u0430\u0442\u044c \u0437\u0430\u043f\u0438\u0441\u044c",
   "Record browser/app audio using screen share.": "\u0417\u0430\u043f\u0438\u0441\u044b\u0432\u0430\u0439\u0442\u0435 \u0437\u0432\u0443\u043a \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0430/\u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u044f \u0447\u0435\u0440\u0435\u0437 \u0434\u0435\u043c\u043e\u043d\u0441\u0442\u0440\u0430\u0446\u0438\u044e \u044d\u043a\u0440\u0430\u043d\u0430.",
   "Recordings & Entries": "\u0417\u0430\u043f\u0438\u0441\u0438 \u0438 \u044d\u043b\u0435\u043c\u0435\u043d\u0442\u044b",
@@ -847,7 +847,13 @@ export default function App() {
   function defaultSourcesFromDevices(devices: RecordingDevice[]): RecordingSource[] {
     const isWindowsDeviceList = devices.some((device) => device.format === "dshow");
     if (isWindowsDeviceList) {
-      const preferredLoopback = devices.find((device) => device.is_loopback);
+      const preferredLoopback =
+        devices.find(
+          (device) =>
+            device.format === "wasapi_loopback" && device.name.includes("(Default Playback)")
+        ) ??
+        devices.find((device) => device.format === "wasapi_loopback") ??
+        devices.find((device) => device.is_loopback);
       const preferredMicLike = devices.find((device) => !device.is_loopback) ?? devices[0];
       if (
         preferredLoopback &&
@@ -1349,6 +1355,15 @@ export default function App() {
                           setNotice(tt("Recording stopped. Transcribing..."));
                         } catch (taskError) {
                           const message = taskError instanceof Error ? taskError.message : String(taskError);
+                          const normalizedMessage = message.toLowerCase();
+                          if (
+                            normalizedMessage.includes("recording session not found") ||
+                            normalizedMessage.includes("recording captured no audible data") ||
+                            normalizedMessage.includes("recording file was not created")
+                          ) {
+                            setRecordingSessionId(null);
+                            setRecordingPaused(false);
+                          }
                           setError(message);
                           setBusy(false);
                           return;
@@ -1718,3 +1733,4 @@ export default function App() {
     </div>
   );
 }
+

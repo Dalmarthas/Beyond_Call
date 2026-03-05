@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -33,6 +34,8 @@ const OPENAI_WHISPER_MODELS: &[&str] = &[
     "large-v3",
     "turbo",
 ];
+const WINDOWS_LOOPBACK_FALLBACK_IDLE_POLLS: u32 = 20;
+const WINDOWS_LOOPBACK_FALLBACK_SILENT_POLLS: u32 = 75;
 #[cfg(target_os = "macos")]
 const SCK_RECORDER_SWIFT: &str = include_str!("../macos/screen_capture_audio.swift");
 
@@ -45,8 +48,30 @@ struct AppState {
 struct RecordingProcess {
     output_path: PathBuf,
     native_microphone_path: Option<PathBuf>,
-    child: Child,
+    windows_loopback_raw_path: Option<PathBuf>,
+    windows_loopback_format: Option<WindowsLoopbackPcmFormat>,
+    child: Option<Child>,
+    windows_wasapi_capture: Option<WindowsWasapiCapture>,
     telemetry: Arc<Mutex<RecordingTelemetry>>,
+}
+
+struct WindowsWasapiCapture {
+    stop_tx: mpsc::Sender<()>,
+    join_handle: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+#[derive(Clone, Copy)]
+enum WindowsLoopbackLevelKind {
+    Float32,
+}
+
+#[derive(Clone, Copy)]
+struct WindowsLoopbackPcmFormat {
+    ffmpeg_input_format: &'static str,
+    sample_rate: u32,
+    channels: u16,
+    bytes_per_frame: usize,
+    level_kind: WindowsLoopbackLevelKind,
 }
 
 struct RecordingSession {
@@ -658,6 +683,26 @@ fn is_native_system_source(source: &RecordingSource) -> bool {
     source.format.eq_ignore_ascii_case("screencapturekit")
 }
 
+fn is_windows_wasapi_loopback_source(source: &RecordingSource) -> bool {
+    source.format.eq_ignore_ascii_case("wasapi_loopback")
+}
+
+fn has_windows_wasapi_loopback_source(sources: &[RecordingSource]) -> bool {
+    cfg!(target_os = "windows") && sources.iter().any(is_windows_wasapi_loopback_source)
+}
+
+fn ffmpeg_required_for_recording_sources(
+    sources: &[RecordingSource],
+    source_analysis: RecordingSourceAnalysis,
+    has_existing_path: bool,
+) -> bool {
+    if has_windows_wasapi_loopback_source(sources) {
+        // Current WASAPI path records float loopback data and finalizes via ffmpeg conversion/mix.
+        return true;
+    }
+    source_analysis.requires_ffmpeg(has_existing_path)
+}
+
 fn analyze_recording_sources(
     sources: &[RecordingSource],
     is_macos_target: bool,
@@ -782,7 +827,7 @@ fn spawn_recording_telemetry(stderr: impl std::io::Read + Send + 'static, teleme
             if let Some(value) = line.strip_prefix("level=") {
                 if let Ok(level) = value.trim().parse::<f32>() {
                     if let Ok(mut state) = telemetry.lock() {
-                        state.level = (state.level * 0.6 + level * 0.4).clamp(0.0, 1.0);
+                        state.level = state.level.max(level.clamp(0.0, 1.0));
                     }
                 }
                 continue;
@@ -806,7 +851,7 @@ fn spawn_recording_telemetry(stderr: impl std::io::Read + Send + 'static, teleme
                     continue;
                 };
                 if let Ok(mut state) = telemetry.lock() {
-                    state.level = (state.level * 0.6 + mapped * 0.4).clamp(0.0, 1.0);
+                    state.level = state.level.max(mapped.clamp(0.0, 1.0));
                 }
             }
         }
@@ -833,6 +878,499 @@ fn recording_runtime_failure_hint() -> &'static str {
     }
 }
 
+fn windows_level_from_float32(buffer: &[u8]) -> f32 {
+    let mut peak = 0.0_f32;
+    for chunk in buffer.chunks_exact(4) {
+        let value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]).abs();
+        if value.is_finite() && value > peak {
+            peak = value;
+        }
+    }
+    peak.clamp(0.0, 1.0)
+}
+
+fn windows_pcm_peak_level(buffer: &[u8], _level_kind: WindowsLoopbackLevelKind) -> f32 {
+    windows_level_from_float32(buffer)
+}
+
+
+fn spawn_ffmpeg_capture_child(sources: &[RecordingSource], output_path: &Path) -> Result<Child, String> {
+    let mut command = Command::new("ffmpeg");
+    command.arg("-y");
+    command.arg("-nostats");
+    command.arg("-progress");
+    command.arg("pipe:2");
+
+    for source in sources {
+        command.arg("-f");
+        command.arg(&source.format);
+        command.arg("-i");
+        command.arg(&source.input);
+    }
+
+    let filter_graph = ffmpeg_recording_filter_graph(sources.len());
+    command.arg("-filter_complex");
+    command.arg(filter_graph);
+    command.arg("-map");
+    command.arg("[mout]");
+
+    command.arg("-ac");
+    command.arg("1");
+    command.arg("-ar");
+    command.arg("16000");
+    command.arg(output_path.to_string_lossy().to_string());
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::piped());
+
+    command
+        .spawn()
+        .map_err(|e| format!("Failed to start ffmpeg recording: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_windows_wasapi_loopback_capture(
+    device_id: &str,
+    output_path: &Path,
+    telemetry: Arc<Mutex<RecordingTelemetry>>,
+) -> Result<(WindowsWasapiCapture, PathBuf, WindowsLoopbackPcmFormat), String> {
+    use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
+
+    let raw_path = output_path.with_extension("loopback.raw");
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let (startup_tx, startup_rx) = mpsc::channel::<Result<WindowsLoopbackPcmFormat, String>>();
+    let selected_device_id = device_id.to_string();
+    let raw_path_for_thread = raw_path.clone();
+
+    let join_handle = thread::spawn(move || -> Result<(), String> {
+        let _ = initialize_mta();
+
+        let init_result = (|| -> Result<_, String> {
+            let enumerator = DeviceEnumerator::new()
+                .map_err(|e| format!("Failed to create WASAPI device enumerator: {e}"))?;
+            let default_device_id = enumerator
+                .get_default_device(&Direction::Render)
+                .ok()
+                .and_then(|device| device.get_id().ok());
+
+            let mut candidate_device_ids: Vec<String> = vec![selected_device_id.clone()];
+            if let Some(default_id) = default_device_id {
+                if !candidate_device_ids
+                    .iter()
+                    .any(|candidate| candidate == &default_id)
+                {
+                    candidate_device_ids.push(default_id);
+                }
+            }
+
+            if let Ok(collection) = enumerator.get_device_collection(&Direction::Render) {
+                if let Ok(count) = collection.get_nbr_devices() {
+                    for index in 0..count {
+                        if let Ok(device) = collection.get_device_at_index(index) {
+                            if let Ok(id) = device.get_id() {
+                                if !candidate_device_ids
+                                    .iter()
+                                    .any(|candidate| candidate == &id)
+                                {
+                                    candidate_device_ids.push(id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let open_stream = |target_device_id: &str| -> Result<
+                (
+                    wasapi::AudioClient,
+                    wasapi::AudioCaptureClient,
+                    WindowsLoopbackPcmFormat,
+                    Vec<u8>,
+                ),
+                String,
+            > {
+                let device = enumerator
+                    .get_device(target_device_id)
+                    .map_err(|e| format!("Failed to open playback device `{target_device_id}`: {e}"))?;
+                let mut audio_client = device
+                    .get_iaudioclient()
+                    .map_err(|e| format!("Failed to create WASAPI audio client: {e}"))?;
+
+                let desired_format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
+                let stream_mode = StreamMode::PollingShared {
+                    autoconvert: true,
+                    buffer_duration_hns: 0,
+                };
+
+                audio_client
+                    .initialize_client(&desired_format, &Direction::Capture, &stream_mode)
+                    .map_err(|e| {
+                        format!(
+                            "Failed to initialize WASAPI loopback stream for `{target_device_id}`: {e}"
+                        )
+                    })?;
+
+                let capture_client = audio_client
+                    .get_audiocaptureclient()
+                    .map_err(|e| format!("Failed to create WASAPI capture client: {e}"))?;
+                audio_client
+                    .start_stream()
+                    .map_err(|e| format!("Failed to start WASAPI loopback stream: {e}"))?;
+
+                let loopback_format = WindowsLoopbackPcmFormat {
+                    ffmpeg_input_format: "f32le",
+                    sample_rate: 48_000,
+                    channels: 2,
+                    bytes_per_frame: desired_format.get_blockalign() as usize,
+                    level_kind: WindowsLoopbackLevelKind::Float32,
+                };
+
+                Ok((audio_client, capture_client, loopback_format, Vec::<u8>::new()))
+            };
+
+            let mut active_device_id = selected_device_id.clone();
+            let (audio_client, capture_client, loopback_format, sample_buffer) =
+                match open_stream(&selected_device_id) {
+                    Ok(stream) => stream,
+                    Err(selected_error) => {
+                        let mut last_error = selected_error;
+                        let mut fallback_stream = None;
+                        for candidate_id in candidate_device_ids.iter().skip(1) {
+                            match open_stream(candidate_id) {
+                                Ok(stream) => {
+                                    fallback_stream = Some((candidate_id.clone(), stream));
+                                    break;
+                                }
+                                Err(error) => {
+                                    last_error = error;
+                                }
+                            }
+                        }
+
+                        let Some((fallback_id, stream)) = fallback_stream else {
+                            return Err(format!(
+                                "Failed to initialize WASAPI loopback capture for selected endpoint `{selected_device_id}` and all fallback playback endpoints. Last error: {last_error}"
+                            ));
+                        };
+
+                        active_device_id = fallback_id;
+                        stream
+                    }
+                };
+
+            let raw_file = File::create(&raw_path_for_thread)
+                .map_err(|e| format!("Failed to create loopback temp file: {e}"))?;
+
+            Ok((
+                audio_client,
+                capture_client,
+                raw_file,
+                loopback_format,
+                sample_buffer,
+                active_device_id,
+                candidate_device_ids,
+                0_usize,
+            ))
+        })();
+
+        let (
+            mut audio_client,
+            mut capture_client,
+            mut raw_file,
+            loopback_format,
+            mut sample_buffer,
+            mut active_device_id,
+            candidate_device_ids,
+            mut fallback_index,
+        ) = match init_result {
+            Ok(value) => value,
+            Err(error) => {
+                if let Ok(mut state) = telemetry.lock() {
+                    state.last_error = Some(error.clone());
+                }
+                let _ = startup_tx.send(Err(error.clone()));
+                return Err(error);
+            }
+        };
+
+        let _ = startup_tx.send(Ok(loopback_format));
+
+        let mut captured_bytes: u64 = 0;
+        let mut idle_polls = 0_u32;
+        let mut silent_polls = 0_u32;
+
+        loop {
+            match stop_rx.try_recv() {
+                Ok(_) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {}
+            }
+
+            thread::sleep(Duration::from_millis(20));
+            let mut saw_packet = false;
+            let mut saw_non_silent_packet = false;
+
+            loop {
+                let Some(frame_count) = capture_client
+                    .get_next_packet_size()
+                    .map_err(|e| format!("Failed to poll WASAPI packet size: {e}"))?
+                else {
+                    break;
+                };
+
+                if frame_count == 0 {
+                    break;
+                }
+
+                saw_packet = true;
+
+                let required_bytes = frame_count as usize * loopback_format.bytes_per_frame;
+                if sample_buffer.len() < required_bytes {
+                    sample_buffer.resize(required_bytes, 0);
+                }
+
+                let (captured_frames, info) = capture_client
+                    .read_from_device(&mut sample_buffer[..required_bytes])
+                    .map_err(|e| format!("Failed to read WASAPI loopback buffer: {e}"))?;
+                if captured_frames == 0 {
+                    break;
+                }
+
+                let captured_chunk_bytes = captured_frames as usize * loopback_format.bytes_per_frame;
+                if info.flags.silent {
+                    sample_buffer[..captured_chunk_bytes].fill(0);
+                }
+
+                raw_file
+                    .write_all(&sample_buffer[..captured_chunk_bytes])
+                    .map_err(|e| format!("Failed to write WASAPI loopback data: {e}"))?;
+                captured_bytes = captured_bytes.saturating_add(captured_chunk_bytes as u64);
+
+                if let Ok(mut state) = telemetry.lock() {
+                    state.bytes_written = captured_bytes;
+                    let level = if info.flags.silent {
+                        0.0
+                    } else {
+                        windows_pcm_peak_level(
+                            &sample_buffer[..captured_chunk_bytes],
+                            loopback_format.level_kind,
+                        )
+                    };
+                    if level > 0.0005 {
+                        saw_non_silent_packet = true;
+                    }
+                    state.level = state.level.max(level.clamp(0.0, 1.0));
+                }
+            }
+
+            if saw_non_silent_packet {
+                idle_polls = 0;
+                silent_polls = 0;
+                continue;
+            }
+
+            if saw_packet {
+                idle_polls = 0;
+                silent_polls = silent_polls.saturating_add(1);
+            } else {
+                idle_polls = idle_polls.saturating_add(1);
+                silent_polls = silent_polls.saturating_add(1);
+            }
+
+            let should_try_fallback = if captured_bytes == 0 {
+                idle_polls >= WINDOWS_LOOPBACK_FALLBACK_IDLE_POLLS
+            } else {
+                silent_polls >= WINDOWS_LOOPBACK_FALLBACK_SILENT_POLLS
+            };
+            if !should_try_fallback {
+                continue;
+            }
+
+            idle_polls = 0;
+            silent_polls = 0;
+            let fallback_reason = if saw_packet {
+                "only silent packets were captured from the active playback endpoint"
+            } else {
+                "no packets were captured from the active playback endpoint"
+            };
+
+            let mut switched = false;
+            let mut last_switch_error: Option<String> = None;
+
+            if candidate_device_ids.len() > 1 {
+                for _ in 0..candidate_device_ids.len() {
+                    let candidate_id = candidate_device_ids
+                        .get(fallback_index % candidate_device_ids.len())
+                        .cloned()
+                        .unwrap_or_else(|| active_device_id.clone());
+                    fallback_index = (fallback_index + 1) % candidate_device_ids.len();
+
+                    if candidate_id == active_device_id {
+                        continue;
+                    }
+
+                    let enumerator = match DeviceEnumerator::new() {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_switch_error =
+                                Some(format!("Failed to create WASAPI enumerator for fallback: {error}"));
+                            break;
+                        }
+                    };
+                    let device = match enumerator.get_device(&candidate_id) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_switch_error = Some(format!(
+                                "Failed to open fallback playback endpoint `{candidate_id}`: {error}"
+                            ));
+                            continue;
+                        }
+                    };
+                    let mut candidate_client = match device.get_iaudioclient() {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_switch_error =
+                                Some(format!("Failed to create fallback audio client: {error}"));
+                            continue;
+                        }
+                    };
+
+                    let desired_format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
+                    let stream_mode = StreamMode::PollingShared {
+                        autoconvert: true,
+                        buffer_duration_hns: 0,
+                    };
+                    if let Err(error) =
+                        candidate_client.initialize_client(&desired_format, &Direction::Capture, &stream_mode)
+                    {
+                        last_switch_error = Some(format!(
+                            "Failed to initialize fallback loopback stream for `{candidate_id}`: {error}"
+                        ));
+                        continue;
+                    }
+
+                    let candidate_capture_client = match candidate_client.get_audiocaptureclient() {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_switch_error =
+                                Some(format!("Failed to create fallback capture client: {error}"));
+                            continue;
+                        }
+                    };
+                    if let Err(error) = candidate_client.start_stream() {
+                        last_switch_error =
+                            Some(format!("Failed to start fallback loopback stream: {error}"));
+                        continue;
+                    }
+
+                    let _ = audio_client.stop_stream();
+                    audio_client = candidate_client;
+                    capture_client = candidate_capture_client;
+                    active_device_id = candidate_id.clone();
+                    switched = true;
+
+                    if let Ok(mut state) = telemetry.lock() {
+                        state.last_error = Some(format!(
+                            "Selected playback endpoint {fallback_reason}. Switched loopback capture to `{active_device_id}`."
+                        ));
+                    }
+                    break;
+                }
+            }
+
+            if !switched {
+                if let Ok(mut state) = telemetry.lock() {
+                    state.last_error = Some(match last_switch_error {
+                        Some(error) => format!(
+                            "WASAPI fallback failed after endpoint rotation: {fallback_reason}. {error}"
+                        ),
+                        None => format!(
+                            "WASAPI fallback failed: {fallback_reason}. Ensure audio is playing on the selected output device, then refresh sources."
+                        ),
+                    });
+                }
+            }
+        }
+
+        let _ = audio_client.stop_stream();
+        raw_file
+            .flush()
+            .map_err(|e| format!("Failed to flush WASAPI loopback data: {e}"))?;
+        Ok(())
+    });
+
+    match startup_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(loopback_format)) => Ok((
+            WindowsWasapiCapture {
+                stop_tx,
+                join_handle: Some(join_handle),
+            },
+            raw_path,
+            loopback_format,
+        )),
+        Ok(Err(error)) => {
+            let _ = join_handle.join();
+            Err(error)
+        }
+        Err(_) => {
+            let _ = stop_tx.send(());
+            let _ = join_handle.join();
+            Err("Timed out while starting WASAPI loopback capture.".to_string())
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_windows_wasapi_loopback_capture(
+    _device_id: &str,
+    _output_path: &Path,
+    _telemetry: Arc<Mutex<RecordingTelemetry>>,
+) -> Result<(WindowsWasapiCapture, PathBuf, WindowsLoopbackPcmFormat), String> {
+    Err("WASAPI loopback capture is only available on Windows.".to_string())
+}
+#[cfg(target_os = "windows")]
+fn finalize_windows_loopback_raw_capture(
+    raw_path: &Path,
+    output_path: &Path,
+    loopback_format: WindowsLoopbackPcmFormat,
+) -> Result<(), String> {
+    let out = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-f")
+        .arg(loopback_format.ffmpeg_input_format)
+        .arg("-ar")
+        .arg(loopback_format.sample_rate.to_string())
+        .arg("-ac")
+        .arg(loopback_format.channels.to_string())
+        .arg("-i")
+        .arg(raw_path)
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg(output_path)
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg WASAPI conversion: {e}"))?;
+
+    if !out.status.success() {
+        let stderr_text = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "Failed to convert WASAPI loopback data into wav: {stderr_text}"
+        ));
+    }
+
+    let _ = fs::remove_file(raw_path);
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn finalize_windows_loopback_raw_capture(
+    _raw_path: &Path,
+    _output_path: &Path,
+    _loopback_format: WindowsLoopbackPcmFormat,
+) -> Result<(), String> {
+    Ok(())
+}
+
 fn spawn_recording_process(
     helper_data_dir: &Path,
     entry_directory: &Path,
@@ -844,14 +1382,20 @@ fn spawn_recording_process(
     let _ = helper_data_dir;
 
     let segment_stamp = unix_now();
-    let (output_path, native_microphone_path) = recording_output_paths(
+    let (output_path, mut native_microphone_path) = recording_output_paths(
         entry_directory,
         has_existing_path,
         source_analysis.native_with_microphone,
         segment_stamp,
     );
 
-    let mut child = if source_analysis.has_native_system_source {
+    let telemetry = Arc::new(Mutex::new(RecordingTelemetry::default()));
+    let mut child: Option<Child> = None;
+    let mut windows_wasapi_capture: Option<WindowsWasapiCapture> = None;
+    let mut windows_loopback_raw_path: Option<PathBuf> = None;
+    let mut windows_loopback_format: Option<WindowsLoopbackPcmFormat> = None;
+
+    if source_analysis.has_native_system_source {
         #[cfg(target_os = "macos")]
         {
             let helper_binary = ensure_sck_recorder_binary(helper_data_dir)?;
@@ -866,59 +1410,84 @@ fn spawn_recording_process(
             command.stdin(Stdio::piped());
             command.stdout(Stdio::null());
             command.stderr(Stdio::piped());
-            command
+
+            let mut native_child = command
                 .spawn()
-                .map_err(|e| format!("Failed to start ScreenCaptureKit recorder: {e}"))?
+                .map_err(|e| format!("Failed to start ScreenCaptureKit recorder: {e}"))?;
+            if let Some(stderr) = native_child.stderr.take() {
+                spawn_recording_telemetry(stderr, Arc::clone(&telemetry));
+            }
+            child = Some(native_child);
         }
         #[cfg(not(target_os = "macos"))]
         {
             unreachable!("Native system source is only available on macOS");
         }
-    } else {
-        let mut command = Command::new("ffmpeg");
-        command.arg("-y");
-        command.arg("-nostats");
-        command.arg("-progress");
-        command.arg("pipe:2");
-
-        for source in sources {
-            command.arg("-f");
-            command.arg(&source.format);
-            command.arg("-i");
-            command.arg(&source.input);
+    } else if has_windows_wasapi_loopback_source(sources) {
+        let mut loopback_sources = sources
+            .iter()
+            .filter(|source| is_windows_wasapi_loopback_source(source));
+        let loopback_source = loopback_sources
+            .next()
+            .ok_or_else(|| "WASAPI loopback source was selected but no source payload was provided.".to_string())?;
+        if loopback_sources.next().is_some() {
+            return Err("Select only one playback (WASAPI) source at a time.".to_string());
         }
 
-        let filter_graph = ffmpeg_recording_filter_graph(sources.len());
-        command.arg("-filter_complex");
-        command.arg(filter_graph);
-        command.arg("-map");
-        command.arg("[mout]");
+        let non_loopback_sources: Vec<RecordingSource> = sources
+            .iter()
+            .filter(|source| !is_windows_wasapi_loopback_source(source))
+            .cloned()
+            .collect();
 
-        command.arg("-ac");
-        command.arg("1");
-        command.arg("-ar");
-        command.arg("16000");
-        command.arg(output_path.to_string_lossy().to_string());
-        command.stdin(Stdio::piped());
-        command.stdout(Stdio::null());
-        command.stderr(Stdio::piped());
+        if !non_loopback_sources.is_empty() {
+            let microphone_output_path = if has_existing_path {
+                entry_directory
+                    .join("audio")
+                    .join(format!("segment-{segment_stamp}-microphone.wav"))
+            } else {
+                entry_directory.join("audio").join("original-microphone.wav")
+            };
 
-        command
-            .spawn()
-            .map_err(|e| format!("Failed to start ffmpeg recording: {e}"))?
-    };
+            let mut microphone_child =
+                spawn_ffmpeg_capture_child(&non_loopback_sources, &microphone_output_path)?;
+            if let Some(stderr) = microphone_child.stderr.take() {
+                spawn_recording_telemetry(stderr, Arc::clone(&telemetry));
+            }
+            child = Some(microphone_child);
+            native_microphone_path = Some(microphone_output_path);
+        } else {
+            native_microphone_path = None;
+        }
 
-    let telemetry = Arc::new(Mutex::new(RecordingTelemetry::default()));
-    if let Some(stderr) = child.stderr.take() {
-        spawn_recording_telemetry(stderr, Arc::clone(&telemetry));
+        let (capture, raw_path, loopback_format) = spawn_windows_wasapi_loopback_capture(
+            &loopback_source.input,
+            &output_path,
+            Arc::clone(&telemetry),
+        )?;
+        windows_wasapi_capture = Some(capture);
+        windows_loopback_raw_path = Some(raw_path);
+        windows_loopback_format = Some(loopback_format);
+    } else {
+        let mut ffmpeg_child = spawn_ffmpeg_capture_child(sources, &output_path)?;
+        if let Some(stderr) = ffmpeg_child.stderr.take() {
+            spawn_recording_telemetry(stderr, Arc::clone(&telemetry));
+        }
+        child = Some(ffmpeg_child);
     }
 
-    // If the recorder exits immediately, surface a clear error instead of creating a dead session.
-    thread::sleep(Duration::from_millis(350));
-    if let Some(status) = child
-        .try_wait()
-        .map_err(|e| format!("Failed to inspect recorder process status: {e}"))?
-    {
+    // If a subprocess exits immediately, surface a clear error instead of creating a dead session.
+    let has_windows_loopback_worker = windows_wasapi_capture.is_some();
+    let exited_status = if let Some(active_child) = child.as_mut() {
+        thread::sleep(Duration::from_millis(350));
+        active_child
+            .try_wait()
+            .map_err(|e| format!("Failed to inspect recorder process status: {e}"))?
+    } else {
+        None
+    };
+
+    if let Some(status) = exited_status {
         if source_analysis.has_native_system_source {
             let details = telemetry
                 .lock()
@@ -930,26 +1499,107 @@ fn spawn_recording_process(
 Grant \"Screen & System Audio Recording\" permission to this app/terminal in macOS Privacy settings and retry. Details: {details}"
             ));
         }
+
         let details = telemetry
             .lock()
             .ok()
             .and_then(|state| state.last_error.clone());
-        if let Some(details) = details {
+
+        if cfg!(target_os = "windows")
+            && has_windows_loopback_worker
+            && has_windows_wasapi_loopback_source(sources)
+        {
+            let retry_started = if let Some(microphone_output_path) = native_microphone_path.clone() {
+                let microphone_sources: Vec<RecordingSource> = sources
+                    .iter()
+                    .filter(|source| !is_windows_wasapi_loopback_source(source))
+                    .cloned()
+                    .collect();
+
+                let (resolved_retry_sources, resolved_changed, retry_notes) =
+                    resolve_windows_dshow_sources_for_retry(&microphone_sources);
+
+                let retry_sources = if resolved_changed {
+                    resolved_retry_sources
+                } else if let Some(rewritten) =
+                    rewrite_windows_dshow_sources_to_friendly_names(&microphone_sources)
+                {
+                    rewritten
+                } else {
+                    microphone_sources.clone()
+                };
+
+                let mut retry_child =
+                    spawn_ffmpeg_capture_child(&retry_sources, &microphone_output_path)?;
+                if let Some(stderr) = retry_child.stderr.take() {
+                    spawn_recording_telemetry(stderr, Arc::clone(&telemetry));
+                }
+
+                thread::sleep(Duration::from_millis(350));
+                if retry_child
+                    .try_wait()
+                    .map_err(|e| {
+                        format!(
+                            "Failed to inspect fallback microphone capture process status: {e}"
+                        )
+                    })?
+                    .is_none()
+                {
+                    child = Some(retry_child);
+                    if let Ok(mut state) = telemetry.lock() {
+                        if !retry_notes.is_empty() {
+                            state.last_error = Some(retry_notes.join(" "));
+                        } else if resolved_changed {
+                            state.last_error = Some(
+                                "Primary DirectShow microphone path failed; switched to validated fallback input."
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    true
+                } else {
+                    if let Ok(mut state) = telemetry.lock() {
+                        if !retry_notes.is_empty() {
+                            state.last_error = Some(retry_notes.join(" "));
+                        }
+                    }
+                    false
+                }
+            } else {
+                false
+            };
+
+            if !retry_started {
+                let detail_text = telemetry
+                    .lock()
+                    .ok()
+                    .and_then(|state| state.last_error.clone())
+                    .or_else(|| details.clone())
+                    .unwrap_or_else(|| "no additional details".to_string());
+                return Err(format!(
+                    "Microphone capture failed to start for the selected source (status {status}) while WASAPI playback capture was active. Pick a different microphone source or verify Windows microphone privacy permissions. Details: {detail_text}"
+                ));
+            }
+        } else if let Some(details) = details {
             return Err(format!(
                 "Recording failed to start (ffmpeg exited with status {status}). {} Details: {details}",
                 recording_start_failure_hint()
             ));
+        } else {
+            return Err(format!(
+                "Recording failed to start (ffmpeg exited with status {status}). {}",
+                recording_start_failure_hint()
+            ));
         }
-        return Err(format!(
-            "Recording failed to start (ffmpeg exited with status {status}). {}",
-            recording_start_failure_hint()
-        ));
     }
 
     Ok(RecordingProcess {
         output_path,
         native_microphone_path,
+        windows_loopback_raw_path,
+        windows_loopback_format,
         child,
+        windows_wasapi_capture,
         telemetry,
     })
 }
@@ -959,38 +1609,95 @@ fn finalize_active_recording_process(session: &mut RecordingSession) -> Result<(
         return Ok(());
     };
 
-    if let Some(mut stdin) = process.child.stdin.take() {
-        let _ = stdin.write_all(b"q\n");
+    if let Some(child) = process.child.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(b"q\n");
+        }
+        wait_for_recorder_shutdown(child);
     }
 
-    wait_for_recorder_shutdown(&mut process.child);
-
-    let recorder_error = process
+    let mut recorder_error = process
         .telemetry
         .lock()
         .ok()
         .and_then(|state| state.last_error.clone());
 
-    let run_output_path = process.output_path.clone();
-
-    if let Some(mic_path) = &process.native_microphone_path {
-        if run_output_path.exists() && mic_path.exists() {
-            let mixed_path = run_output_path
-                .parent()
-                .unwrap_or(run_output_path.as_path())
-                .join(format!("mixed-{}.wav", unix_now()));
-            mix_audio_tracks(&run_output_path, mic_path, &mixed_path)?;
-            let _ = fs::remove_file(&run_output_path);
-            fs::rename(&mixed_path, &run_output_path)
-                .map_err(|e| format!("Failed to finalize mixed native recording: {e}"))?;
-            let _ = fs::remove_file(mic_path);
-        } else if mic_path.exists() && !run_output_path.exists() {
-            return Err("Microphone stream recorded but system stream is missing. Retry recording and ensure system audio is actively playing.".to_string());
+    if let Some(mut capture) = process.windows_wasapi_capture.take() {
+        let _ = capture.stop_tx.send(());
+        if let Some(join_handle) = capture.join_handle.take() {
+            match join_handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    recorder_error = Some(error.clone());
+                    if let Ok(mut state) = process.telemetry.lock() {
+                        state.last_error = Some(error);
+                    }
+                }
+                Err(_) => {
+                    let error = "WASAPI loopback worker thread terminated unexpectedly.".to_string();
+                    recorder_error = Some(error.clone());
+                    if let Ok(mut state) = process.telemetry.lock() {
+                        state.last_error = Some(error);
+                    }
+                }
+            }
         }
     }
 
-    let run_file_size = fs::metadata(&run_output_path).map(|meta| meta.len()).unwrap_or(0);
-    if run_output_path.exists() && run_file_size > 64 {
+    let run_output_path = process.output_path.clone();
+
+    if let Some(raw_path) = &process.windows_loopback_raw_path {
+        if raw_path.exists() {
+            let loopback_format = process
+                .windows_loopback_format
+                .ok_or_else(|| "Missing WASAPI loopback format metadata for conversion.".to_string())?;
+            finalize_windows_loopback_raw_capture(raw_path, &run_output_path, loopback_format)?;
+        }
+    }
+
+    if let Some(mic_path) = &process.native_microphone_path {
+        let loopback_exists = run_output_path.exists();
+        let microphone_exists = mic_path.exists();
+
+        if loopback_exists && microphone_exists {
+            let loopback_has_signal = recording_contains_audible_signal(&run_output_path);
+            let microphone_has_signal = recording_contains_audible_signal(mic_path);
+
+            match (loopback_has_signal, microphone_has_signal) {
+                (true, true) => {
+                    let mixed_path = run_output_path
+                        .parent()
+                        .unwrap_or(run_output_path.as_path())
+                        .join(format!("mixed-{}.wav", unix_now()));
+                    mix_audio_tracks(&run_output_path, mic_path, &mixed_path)?;
+                    let _ = fs::remove_file(&run_output_path);
+                    fs::rename(&mixed_path, &run_output_path)
+                        .map_err(|e| format!("Failed to finalize mixed native recording: {e}"))?;
+                    let _ = fs::remove_file(mic_path);
+                }
+                (true, false) => {
+                    let _ = fs::remove_file(mic_path);
+                }
+                (false, true) => {
+                    let _ = fs::remove_file(&run_output_path);
+                    fs::rename(mic_path, &run_output_path).map_err(|e| {
+                        format!("Failed to promote microphone recording as final output: {e}")
+                    })?;
+                }
+                (false, false) => {
+                    let _ = fs::remove_file(mic_path);
+                }
+            }
+        } else if microphone_exists && !loopback_exists {
+            fs::rename(mic_path, &run_output_path)
+                .map_err(|e| format!("Failed to finalize microphone-only recording: {e}"))?;
+        }
+    }
+
+    let run_has_audio_payload = run_output_path.exists()
+        && recording_contains_audio_payload(&run_output_path)
+        && recording_contains_audible_signal(&run_output_path);
+    if run_has_audio_payload {
         let existing_valid = session
             .existing_path
             .as_ref()
@@ -1036,6 +1743,144 @@ fn finalize_active_recording_process(session: &mut RecordingSession) -> Result<(
 
     // No completed segment yet (for example, immediate pause). Keep session alive.
     Ok(())
+}
+
+fn recording_contains_audio_payload(path: &Path) -> bool {
+    let file_size = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    if file_size <= 128 {
+        return false;
+    }
+
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return file_size > 1024,
+    };
+
+    let mut riff_header = [0_u8; 12];
+    if file.read_exact(&mut riff_header).is_err() {
+        return file_size > 1024;
+    }
+
+    if &riff_header[0..4] != b"RIFF" || &riff_header[8..12] != b"WAVE" {
+        return file_size > 1024;
+    }
+
+    loop {
+        let mut chunk_header = [0_u8; 8];
+        if file.read_exact(&mut chunk_header).is_err() {
+            break;
+        }
+
+        let chunk_size = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]) as u64;
+
+        if &chunk_header[0..4] == b"data" {
+            return chunk_size > 0;
+        }
+
+        let aligned_size = chunk_size + (chunk_size % 2);
+        if file.seek(SeekFrom::Current(aligned_size as i64)).is_err() {
+            break;
+        }
+    }
+
+    file_size > 1024
+}
+
+fn recording_contains_audible_signal(path: &Path) -> bool {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+
+    let mut riff_header = [0_u8; 12];
+    if file.read_exact(&mut riff_header).is_err() {
+        return false;
+    }
+
+    if &riff_header[0..4] != b"RIFF" || &riff_header[8..12] != b"WAVE" {
+        return false;
+    }
+
+    let mut audio_format: Option<u16> = None;
+    let mut bits_per_sample: Option<u16> = None;
+
+    loop {
+        let mut chunk_header = [0_u8; 8];
+        if file.read_exact(&mut chunk_header).is_err() {
+            break;
+        }
+
+        let chunk_size = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]) as u64;
+
+        if &chunk_header[0..4] == b"fmt " {
+            if chunk_size < 16 {
+                return false;
+            }
+            let mut fmt_prefix = [0_u8; 16];
+            if file.read_exact(&mut fmt_prefix).is_err() {
+                return false;
+            }
+            audio_format = Some(u16::from_le_bytes([fmt_prefix[0], fmt_prefix[1]]));
+            bits_per_sample = Some(u16::from_le_bytes([fmt_prefix[14], fmt_prefix[15]]));
+
+            let trailing_fmt_bytes = chunk_size.saturating_sub(16);
+            let aligned_trailing = trailing_fmt_bytes + (chunk_size % 2);
+            if aligned_trailing > 0
+                && file
+                    .seek(SeekFrom::Current(aligned_trailing as i64))
+                    .is_err()
+            {
+                return false;
+            }
+            continue;
+        }
+
+        if &chunk_header[0..4] == b"data" {
+            let mut remaining = chunk_size;
+            let mut buffer = [0_u8; 8192];
+            while remaining > 0 {
+                let read_len = remaining.min(buffer.len() as u64) as usize;
+                if file.read_exact(&mut buffer[..read_len]).is_err() {
+                    return false;
+                }
+
+                let has_signal = match (audio_format, bits_per_sample) {
+                    (Some(1), Some(16)) => buffer[..read_len]
+                        .chunks_exact(2)
+                        .any(|sample| i16::from_le_bytes([sample[0], sample[1]]) != 0),
+                    (Some(3), Some(32)) => buffer[..read_len].chunks_exact(4).any(|sample| {
+                        f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]).abs()
+                            > 1e-6
+                    }),
+                    _ => buffer[..read_len].iter().any(|value| *value != 0),
+                };
+
+                if has_signal {
+                    return true;
+                }
+                remaining -= read_len as u64;
+            }
+
+            return false;
+        }
+
+        let aligned_size = chunk_size + (chunk_size % 2);
+        if file.seek(SeekFrom::Current(aligned_size as i64)).is_err() {
+            break;
+        }
+    }
+
+    false
 }
 
 fn wait_for_recorder_shutdown(child: &mut Child) {
@@ -1467,8 +2312,243 @@ fn windows_dshow_audio_input(name: &str) -> String {
     format!("audio=\"{escaped}\"")
 }
 
+fn parse_windows_dshow_audio_value(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    let (left, right) = trimmed.split_once('=')?;
+    if !left.trim().eq_ignore_ascii_case("audio") {
+        return None;
+    }
+    let value = right.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn unquote_windows_dshow_audio_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        trimmed[1..trimmed.len() - 1].replace("\\\"", "\"")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn windows_dshow_input_candidates(source: &RecordingSource) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_candidate = |candidate: String| {
+        let normalized = candidate.trim();
+        if normalized.is_empty() {
+            return;
+        }
+        if seen.insert(normalized.to_string()) {
+            candidates.push(normalized.to_string());
+        }
+    };
+
+    push_candidate(source.input.clone());
+
+    if source.format.eq_ignore_ascii_case("dshow") {
+        if let Some(value) = parse_windows_dshow_audio_value(&source.input) {
+            let raw_value = unquote_windows_dshow_audio_value(value);
+            if !raw_value.is_empty() {
+                push_candidate(windows_dshow_audio_input(&raw_value));
+                push_candidate(format!("audio={raw_value}"));
+            }
+        }
+
+        let label = source.label.trim();
+        if !label.is_empty() {
+            push_candidate(windows_dshow_audio_input(label));
+            push_candidate(format!("audio={label}"));
+        }
+    }
+
+    candidates
+}
+#[cfg(target_os = "windows")]
+fn rewrite_windows_dshow_sources_to_friendly_names(
+    sources: &[RecordingSource],
+) -> Option<Vec<RecordingSource>> {
+    let mut changed = false;
+    let mut rewritten: Vec<RecordingSource> = Vec::with_capacity(sources.len());
+
+    for source in sources {
+        if source.format.eq_ignore_ascii_case("dshow")
+            && source.input.to_ascii_lowercase().contains("@device_")
+        {
+            rewritten.push(RecordingSource {
+                label: source.label.clone(),
+                format: source.format.clone(),
+                input: windows_dshow_audio_input(&source.label),
+            });
+            changed = true;
+        } else {
+            rewritten.push(source.clone());
+        }
+    }
+
+    changed.then_some(rewritten)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn rewrite_windows_dshow_sources_to_friendly_names(
+    _sources: &[RecordingSource],
+) -> Option<Vec<RecordingSource>> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn probe_windows_dshow_input(candidate_input: &str) -> Result<(), String> {
+    let mut child = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-nostats")
+        .arg("-f")
+        .arg("dshow")
+        .arg("-i")
+        .arg(candidate_input)
+        .arg("-t")
+        .arg("0.30")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-f")
+        .arg("null")
+        .arg("-")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("probe spawn failed: {e}"))?;
+
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(1_500);
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("probe status check failed: {e}"))?
+        {
+            let mut stderr_text = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                let _ = stderr.read_to_string(&mut stderr_text);
+            }
+
+            if status.success() {
+                return Ok(());
+            }
+
+            let detail = stderr_text
+                .lines()
+                .rev()
+                .find(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    lower.contains("error")
+                        || lower.contains("failed")
+                        || lower.contains("could not find")
+                })
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .unwrap_or_else(|| {
+                    if stderr_text.trim().is_empty() {
+                        "no additional details".to_string()
+                    } else {
+                        stderr_text.trim().to_string()
+                    }
+                });
+
+            return Err(format!("probe failed with status {status}: {detail}"));
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(());
+        }
+
+        thread::sleep(Duration::from_millis(75));
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn probe_windows_dshow_input(_candidate_input: &str) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_dshow_sources_for_retry(
+    sources: &[RecordingSource],
+) -> (Vec<RecordingSource>, bool, Vec<String>) {
+    let mut resolved_sources = Vec::with_capacity(sources.len());
+    let mut changed = false;
+    let mut notes: Vec<String> = Vec::new();
+
+    for source in sources {
+        if !source.format.eq_ignore_ascii_case("dshow") {
+            resolved_sources.push(source.clone());
+            continue;
+        }
+
+        let candidates = windows_dshow_input_candidates(source);
+        let mut chosen_input: Option<String> = None;
+        let mut last_probe_error: Option<String> = None;
+
+        for candidate in &candidates {
+            match probe_windows_dshow_input(candidate) {
+                Ok(()) => {
+                    chosen_input = Some(candidate.clone());
+                    break;
+                }
+                Err(error) => {
+                    last_probe_error = Some(error);
+                }
+            }
+        }
+
+        if let Some(chosen) = chosen_input {
+            if chosen != source.input {
+                changed = true;
+                notes.push(format!(
+                    "Resolved DirectShow source `{}` via fallback input form.",
+                    source.label
+                ));
+            }
+            let mut rewritten = source.clone();
+            rewritten.input = chosen;
+            resolved_sources.push(rewritten);
+        } else {
+            if let Some(error) = last_probe_error {
+                notes.push(format!(
+                    "DirectShow probe failed for `{}`: {error}",
+                    source.label
+                ));
+            }
+            resolved_sources.push(source.clone());
+        }
+    }
+
+    (resolved_sources, changed, notes)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn resolve_windows_dshow_sources_for_retry(
+    sources: &[RecordingSource],
+) -> (Vec<RecordingSource>, bool, Vec<String>) {
+    (sources.to_vec(), false, Vec::new())
+}
+fn parse_quoted_value(line: &str) -> Option<&str> {
+    let first_quote = line.find('"')?;
+    let remainder = &line[(first_quote + 1)..];
+    let second_quote = remainder.find('"')?;
+    Some(remainder[..second_quote].trim())
+}
+
 fn parse_macos_recording_devices(joined_output: &str) -> Vec<RecordingDevice> {
-    let mut devices = Vec::new();
+    let mut devices: Vec<RecordingDevice> = Vec::new();
     let mut in_audio_section = false;
 
     for line in joined_output.lines() {
@@ -1511,8 +2591,9 @@ fn parse_macos_recording_devices(joined_output: &str) -> Vec<RecordingDevice> {
 }
 
 fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> {
-    let mut devices = Vec::new();
+    let mut devices: Vec<RecordingDevice> = Vec::new();
     let mut in_audio_section = false;
+    let mut last_audio_device_index: Option<usize> = None;
 
     for line in joined_output.lines() {
         let trimmed = line.trim();
@@ -1522,29 +2603,37 @@ fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> 
         }
         if trimmed.contains("DirectShow video devices") {
             in_audio_section = false;
+            last_audio_device_index = None;
             continue;
         }
+
         if trimmed.contains("Alternative name") {
+            if let Some(index) = last_audio_device_index {
+                if let Some(alternative_name) = parse_quoted_value(trimmed) {
+                    if !alternative_name.is_empty() {
+                        devices[index].input = windows_dshow_audio_input(alternative_name);
+                    }
+                }
+            }
             continue;
         }
 
-        let Some(first_quote) = trimmed.find('"') else {
+        let Some(name) = parse_quoted_value(trimmed) else {
             continue;
         };
-        let remainder = &trimmed[(first_quote + 1)..];
-        let Some(second_quote) = remainder.find('"') else {
-            continue;
-        };
-
-        let name = remainder[..second_quote].trim();
         if name.is_empty() {
             continue;
         }
 
-        let suffix = remainder[(second_quote + 1)..].trim().to_ascii_lowercase();
-        let has_audio_tag = suffix.contains("(audio)");
-        let has_video_tag = suffix.contains("(video)");
-        let has_none_tag = suffix.contains("(none)");
+        let remainder = trimmed
+            .split_once('"')
+            .and_then(|(_, rest)| rest.split_once('"').map(|(_, suffix)| suffix))
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let has_audio_tag = remainder.contains("(audio)");
+        let has_video_tag = remainder.contains("(video)");
+        let has_none_tag = remainder.contains("(none)");
         let likely_audio_name = {
             let lower = name.to_ascii_lowercase();
             lower.contains("audio")
@@ -1576,6 +2665,7 @@ fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> 
             .iter()
             .any(|item: &RecordingDevice| item.name.eq_ignore_ascii_case(name));
         if exists {
+            last_audio_device_index = None;
             continue;
         }
 
@@ -1585,9 +2675,67 @@ fn parse_windows_recording_devices(joined_output: &str) -> Vec<RecordingDevice> 
             input: windows_dshow_audio_input(name),
             is_loopback: is_loopback_device_name(name),
         });
+        last_audio_device_index = Some(devices.len() - 1);
     }
 
     devices
+}
+
+#[cfg(target_os = "windows")]
+fn list_windows_wasapi_loopback_devices() -> Result<Vec<RecordingDevice>, String> {
+    use wasapi::{initialize_mta, DeviceEnumerator, Direction};
+
+    let _ = initialize_mta();
+    let enumerator = DeviceEnumerator::new()
+        .map_err(|e| format!("Failed to create WASAPI device enumerator: {e}"))?;
+
+    let default_id = enumerator
+        .get_default_device(&Direction::Render)
+        .ok()
+        .and_then(|device| device.get_id().ok());
+
+    let collection = enumerator
+        .get_device_collection(&Direction::Render)
+        .map_err(|e| format!("Failed to query playback endpoints: {e}"))?;
+    let count = collection
+        .get_nbr_devices()
+        .map_err(|e| format!("Failed to count playback endpoints: {e}"))?;
+
+    let mut devices: Vec<RecordingDevice> = Vec::new();
+    for index in 0..count {
+        let device = collection
+            .get_device_at_index(index)
+            .map_err(|e| format!("Failed to open playback endpoint #{index}: {e}"))?;
+
+        let id = device
+            .get_id()
+            .map_err(|e| format!("Failed to read playback endpoint id #{index}: {e}"))?;
+        let name = device
+            .get_friendlyname()
+            .unwrap_or_else(|_| format!("Playback Device {}", index + 1));
+        let is_default = default_id
+            .as_ref()
+            .map(|default_id| default_id == &id)
+            .unwrap_or(false);
+
+        devices.push(RecordingDevice {
+            name: if is_default {
+                format!("{name} (Default Playback)")
+            } else {
+                name
+            },
+            format: "wasapi_loopback".to_string(),
+            input: id,
+            is_loopback: true,
+        });
+    }
+
+    Ok(devices)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn list_windows_wasapi_loopback_devices() -> Result<Vec<RecordingDevice>, String> {
+    Ok(Vec::new())
 }
 
 fn estimated_pcm_bytes_from_us(out_time_us: u64) -> u64 {
@@ -1602,15 +2750,17 @@ fn rms_db_to_level(db: f32) -> f32 {
 
 #[tauri::command]
 fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
-    if !find_executable("ffmpeg") {
+    let ffmpeg_available = find_executable("ffmpeg");
+
+    if !ffmpeg_available && !cfg!(target_os = "windows") {
         if let Some(native) = native_system_recording_device() {
             return Ok(vec![native]);
         }
         return Err("ffmpeg not found in PATH".to_string());
     }
 
-    let output = if cfg!(target_os = "macos") {
-        Command::new("ffmpeg")
+    let mut devices = if cfg!(target_os = "macos") {
+        let output = Command::new("ffmpeg")
             .arg("-f")
             .arg("avfoundation")
             .arg("-list_devices")
@@ -1618,46 +2768,63 @@ fn list_recording_devices() -> Result<Vec<RecordingDevice>, String> {
             .arg("-i")
             .arg("")
             .output()
-            .map_err(|e| format!("Failed to query ffmpeg avfoundation devices: {e}"))?
+            .map_err(|e| format!("Failed to query ffmpeg avfoundation devices: {e}"))?;
+
+        let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+        let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
+        let joined = format!("{stderr_text}\n{stdout_text}");
+        parse_macos_recording_devices(&joined)
     } else if cfg!(target_os = "windows") {
-        Command::new("ffmpeg")
-            .arg("-list_devices")
-            .arg("true")
-            .arg("-f")
-            .arg("dshow")
-            .arg("-i")
-            .arg("dummy")
-            .output()
-            .map_err(|e| format!("Failed to query ffmpeg dshow devices: {e}"))?
+        let mut devices = list_windows_wasapi_loopback_devices().unwrap_or_else(|error| {
+            eprintln!("WASAPI playback enumeration failed: {error}");
+            Vec::new()
+        });
+
+        if ffmpeg_available {
+            let output = Command::new("ffmpeg")
+                .arg("-list_devices")
+                .arg("true")
+                .arg("-f")
+                .arg("dshow")
+                .arg("-i")
+                .arg("dummy")
+                .output()
+                .map_err(|e| format!("Failed to query ffmpeg dshow devices: {e}"))?;
+
+            let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+            let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
+            let joined = format!("{stderr_text}\n{stdout_text}");
+
+            let lower = joined.to_ascii_lowercase();
+            if lower.contains("unknown input format: 'dshow'")
+                || lower.contains("unknown input format: \"dshow\"")
+            {
+                return Err(
+                    "ffmpeg build is missing DirectShow (dshow) support. Install a Windows ffmpeg build with DirectShow enabled."
+                        .to_string(),
+                );
+            }
+
+            let mut dshow_devices = parse_windows_recording_devices(&joined);
+            devices.append(&mut dshow_devices);
+        }
+
+        if !ffmpeg_available && devices.is_empty() {
+            return Err(
+                "ffmpeg not found in PATH and no WASAPI playback devices were detected.".to_string(),
+            );
+        }
+
+        devices
     } else {
-        Command::new("ffmpeg")
+        let output = Command::new("ffmpeg")
             .arg("-sources")
             .arg("pulse")
             .output()
-            .map_err(|e| format!("Failed to query ffmpeg audio sources: {e}"))?
-    };
+            .map_err(|e| format!("Failed to query ffmpeg audio sources: {e}"))?;
 
-    let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
-    let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
-    let joined = format!("{stderr_text}\n{stdout_text}");
-
-    if cfg!(target_os = "windows") {
-        let lower = joined.to_ascii_lowercase();
-        if lower.contains("unknown input format: 'dshow'")
-            || lower.contains("unknown input format: \"dshow\"")
-        {
-            return Err(
-                "ffmpeg build is missing DirectShow (dshow) support. Install a Windows ffmpeg build with DirectShow enabled."
-                    .to_string(),
-            );
-        }
-    }
-
-    let mut devices = if cfg!(target_os = "macos") {
-        parse_macos_recording_devices(&joined)
-    } else if cfg!(target_os = "windows") {
-        parse_windows_recording_devices(&joined)
-    } else {
+        let _stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+        let _stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
         Vec::new()
     };
 
@@ -1691,11 +2858,34 @@ fn build_audio_device_hints(
         );
     }
 
+    let has_wasapi_playback = cfg!(target_os = "windows")
+        && devices
+            .iter()
+            .any(|device| device.format.eq_ignore_ascii_case("wasapi_loopback"));
+
     if !ffmpeg_available {
-        hints.push("ffmpeg not found in PATH. Install ffmpeg and restart the app.".to_string());
         if cfg!(target_os = "windows") {
+            if has_wasapi_playback {
+                hints.push(
+                    "Playback devices detected via WASAPI loopback. You can record system audio without VB-CABLE/Stereo Mix."
+                        .to_string(),
+                );
+            } else {
+                hints.push(
+                    "No playback loopback device detected via WASAPI. Check Windows sound devices and restart audio services, then refresh."
+                        .to_string(),
+                );
+            }
             hints.push(
-                "No loopback source detected automatically. Enable Stereo Mix or install VB-CABLE to capture system audio on Windows."
+                "ffmpeg not found in PATH. Install ffmpeg to enable microphone capture and multi-source audio mixing on Windows."
+                    .to_string(),
+            );
+        } else {
+            hints.push("ffmpeg not found in PATH. Install ffmpeg and restart the app.".to_string());
+        }
+        if devices.is_empty() {
+            hints.push(
+                "No recording devices detected. Verify microphone/loopback devices in system settings, then refresh."
                     .to_string(),
             );
         }
@@ -1726,6 +2916,13 @@ fn build_audio_device_hints(
 
     let loopback_count = devices.iter().filter(|device| device.is_loopback).count();
     if cfg!(target_os = "windows") {
+        if has_wasapi_playback {
+            hints.push(
+                "WASAPI playback capture is available. Pick your speakers/headphones source to capture app/system audio."
+                    .to_string(),
+            );
+        }
+
         if loopback_count == 0 {
             hints.push(
                 "No loopback source detected. Enable Stereo Mix or install VB-CABLE to capture app/system audio on Windows."
@@ -1733,7 +2930,7 @@ fn build_audio_device_hints(
             );
             hints.push("You can still record microphone-only by selecting a non-loopback source.".to_string());
             hints.push(
-                "Playback devices (speakers/headphones) are not capturable directly by dshow. Route output through Stereo Mix, VB-CABLE, or Wave Link Stream to capture system audio."
+                "DirectShow does not expose speaker/headphone endpoints. Use WASAPI playback sources above, or route output through Stereo Mix/VB-CABLE/Wave Link Stream."
                     .to_string(),
             );
         } else {
@@ -1766,37 +2963,25 @@ fn list_audio_device_hints() -> Result<Vec<String>, String> {
     let ffmpeg_available = find_executable("ffmpeg");
     let has_native_source = native_system_recording_device().is_some();
 
-    let devices = if ffmpeg_available {
-        match list_recording_devices() {
-            Ok(items) => items,
-            Err(error) => {
-                let mut hints = build_audio_device_hints(&[], true, has_native_source);
-                hints.push(format!("Device query failed: {error}"));
-                return Ok(hints);
-            }
+    match list_recording_devices() {
+        Ok(devices) => Ok(build_audio_device_hints(
+            &devices,
+            ffmpeg_available,
+            has_native_source,
+        )),
+        Err(error) => {
+            let mut hints = build_audio_device_hints(&[], ffmpeg_available, has_native_source);
+            hints.push(format!("Device query failed: {error}"));
+            Ok(hints)
         }
-    } else {
-        native_system_recording_device().into_iter().collect()
-    };
-
-    Ok(build_audio_device_hints(
-        &devices,
-        ffmpeg_available,
-        has_native_source,
-    ))
+    }
 }
 
 #[tauri::command]
 fn list_recording_devices_with_hints() -> Result<RecordingDevicesWithHints, String> {
     let ffmpeg_available = find_executable("ffmpeg");
     let has_native_source = native_system_recording_device().is_some();
-
-    let devices = if ffmpeg_available {
-        list_recording_devices()?
-    } else {
-        native_system_recording_device().into_iter().collect()
-    };
-
+    let devices = list_recording_devices()?;
     let hints = build_audio_device_hints(&devices, ffmpeg_available, has_native_source);
     Ok(RecordingDevicesWithHints { devices, hints })
 }
@@ -1833,9 +3018,14 @@ fn recording_meter(session_id: String, state: State<'_, AppState>) -> Result<Rec
         if file_bytes > state.bytes_written {
             state.bytes_written = file_bytes;
         }
+        let reported_level = state.level.clamp(0.0, 1.0);
+        state.level = (state.level * 0.72).clamp(0.0, 1.0);
+        if state.level < 0.001 {
+            state.level = 0.0;
+        }
         return Ok(RecordingMeter {
             bytes_written: state.bytes_written,
-            level: state.level,
+            level: reported_level,
         });
     }
 
@@ -2222,7 +3412,7 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
     // ffmpeg is required for the non-native capture path, for append concatenation,
     // and for native system+microphone final mixing.
     let has_existing_path = existing_path.as_ref().map(|path| path.exists()).unwrap_or(false);
-    let requires_ffmpeg = source_analysis.requires_ffmpeg(has_existing_path);
+    let requires_ffmpeg = ffmpeg_required_for_recording_sources(&sources, source_analysis, has_existing_path);
     if requires_ffmpeg && !find_executable("ffmpeg") {
         return Err("ffmpeg not found in PATH. Install ffmpeg to enable this recording mode.".to_string());
     }
@@ -2260,33 +3450,36 @@ fn start_recording(entry_id: String, sources: Vec<RecordingSource>, state: State
 
 #[tauri::command]
 fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    let mut session = sessions
-        .remove(&session_id)
-        .ok_or_else(|| "Recording session not found".to_string())?;
-    drop(sessions);
+    let (entry_id, recording_path, duration_sec) = {
+        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| "Recording session not found".to_string())?;
 
-    if session.process.is_some() {
-        finalize_active_recording_process(&mut session)?;
-    }
+        if session.process.is_some() {
+            finalize_active_recording_process(session)?;
+        }
 
-    let final_path = session
-        .existing_path
-        .as_ref()
-        .filter(|path| path.exists())
-        .cloned()
-        .ok_or_else(|| format!("Recording file was not created. {}", recording_runtime_failure_hint()))?;
+        let final_path = session
+            .existing_path
+            .as_ref()
+            .filter(|path| path.exists())
+            .cloned()
+            .ok_or_else(|| format!("Recording file was not created. {}", recording_runtime_failure_hint()))?;
 
-    let file_size = fs::metadata(&final_path).map(|meta| meta.len()).unwrap_or(0);
-    if file_size <= 64 {
-        return Err(
-            "Recording captured no audible data. Check source routing/permissions and try again while audio is playing."
-                .to_string(),
-        );
-    }
+        if !recording_contains_audio_payload(&final_path)
+            || !recording_contains_audible_signal(&final_path)
+        {
+            return Err(
+                "Recording captured no audible data. Check source routing/permissions and try again while audio is playing."
+                    .to_string(),
+            );
+        }
 
-    let recording_path = final_path.to_string_lossy().to_string();
-    let duration_sec = probe_duration_seconds(&recording_path);
+        let recording_path = final_path.to_string_lossy().to_string();
+        let duration_sec = probe_duration_seconds(&recording_path);
+        (session.entry_id.clone(), recording_path, duration_sec)
+    };
 
     let db = db_path(&state)?;
     let conn = connection(&db)?;
@@ -2294,13 +3487,15 @@ fn stop_recording(session_id: String, state: State<'_, AppState>) -> Result<(), 
         "UPDATE entries
          SET status = 'recorded', recording_path = ?1, duration_sec = ?2, updated_at = ?3
          WHERE id = ?4",
-        params![recording_path, duration_sec, now_ts(), session.entry_id],
+        params![recording_path, duration_sec, now_ts(), entry_id],
     )
     .map_err(|e| format!("Failed to finalize recording entry state: {e}"))?;
 
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    sessions.remove(&session_id);
+
     Ok(())
 }
-
 #[tauri::command]
 fn set_recording_paused(session_id: String, paused: bool, state: State<'_, AppState>) -> Result<(), String> {
     let base_data_dir = data_dir(&state)?;
@@ -2331,7 +3526,7 @@ fn set_recording_paused(session_id: String, paused: bool, state: State<'_, AppSt
         .as_ref()
         .map(|path| path.exists())
         .unwrap_or(false);
-    let requires_ffmpeg = session.source_analysis.requires_ffmpeg(has_existing_path);
+    let requires_ffmpeg = ffmpeg_required_for_recording_sources(&session.sources, session.source_analysis, has_existing_path);
     if requires_ffmpeg && !find_executable("ffmpeg") {
         return Err("ffmpeg not found in PATH. Install ffmpeg to enable this recording mode.".to_string());
     }
@@ -2367,6 +3562,12 @@ fn transcribe_entry(entry_id: String, language: Option<String>, state: State<'_,
 
     if !Path::new(&recording_path).exists() {
         return Err("Recording path does not exist on disk".to_string());
+    }
+
+    if !recording_contains_audio_payload(Path::new(&recording_path))
+        || !recording_contains_audible_signal(Path::new(&recording_path))
+    {
+        return Err("Recording contains no audible signal. Re-record with active audio and verify your selected sources.".to_string());
     }
 
     let base_data_dir = data_dir(&state)?;
@@ -3049,7 +4250,22 @@ mod tests {
         assert!(!devices[0].is_loopback);
 
         assert_eq!(devices[1].name, "Stereo Mix (Realtek Audio)");
+        assert_eq!(devices[1].input, "audio=\"@device_cm_{123}\"");
         assert!(devices[1].is_loopback);
+    }
+
+    #[test]
+    fn parse_windows_recording_devices_prefers_alternative_name_for_dshow_input() {
+        let output = r#"
+[dshow @ 000001] DirectShow audio devices
+[dshow @ 000001]  "Microphone (USB Audio Device)"
+[dshow @ 000001]     Alternative name "@device_cm_{abc}"
+"#;
+
+        let devices = parse_windows_recording_devices(output);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].name, "Microphone (USB Audio Device)");
+        assert_eq!(devices[0].input, "audio=\"@device_cm_{abc}\"");
     }
 
     #[test]
@@ -3096,6 +4312,37 @@ mod tests {
     }
 
     #[test]
+    fn windows_dshow_input_candidates_include_friendly_and_unquoted_variants() {
+        let source = RecordingSource {
+            label: "Wave Link Stream (Elgato Wave:3)".to_string(),
+            format: "dshow".to_string(),
+            input: "audio=\"@device_cm_{abc}\"".to_string(),
+        };
+
+        let candidates = windows_dshow_input_candidates(&source);
+        assert_eq!(candidates[0], "audio=\"@device_cm_{abc}\"");
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate == "audio=@device_cm_{abc}"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate == "audio=\"Wave Link Stream (Elgato Wave:3)\""));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate == "audio=Wave Link Stream (Elgato Wave:3)"));
+    }
+
+    #[test]
+    fn parse_windows_dshow_audio_value_requires_audio_prefix() {
+        assert_eq!(parse_windows_dshow_audio_value("video=Camera"), None);
+        assert_eq!(parse_windows_dshow_audio_value("audio=   "), None);
+        assert_eq!(
+            parse_windows_dshow_audio_value("audio=\"Microphone\""),
+            Some("\"Microphone\"")
+        );
+    }
+
+    #[test]
     fn build_audio_device_hints_warns_when_windows_loopback_missing() {
         let devices = vec![RecordingDevice {
             name: "Microphone Array".to_string(),
@@ -3121,3 +4368,18 @@ mod tests {
     }
 
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
