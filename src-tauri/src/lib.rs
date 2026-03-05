@@ -1516,18 +1516,8 @@ Grant \"Screen & System Audio Recording\" permission to this app/terminal in mac
                     .cloned()
                     .collect();
 
-                let (resolved_retry_sources, resolved_changed, retry_notes) =
+                let (retry_sources, resolved_changed, retry_notes) =
                     resolve_windows_dshow_sources_for_retry(&microphone_sources);
-
-                let retry_sources = if resolved_changed {
-                    resolved_retry_sources
-                } else if let Some(rewritten) =
-                    rewrite_windows_dshow_sources_to_friendly_names(&microphone_sources)
-                {
-                    rewritten
-                } else {
-                    microphone_sources.clone()
-                };
 
                 let mut retry_child =
                     spawn_ffmpeg_capture_child(&retry_sources, &microphone_output_path)?;
@@ -2367,37 +2357,6 @@ fn windows_dshow_input_candidates(source: &RecordingSource) -> Vec<String> {
     }
 
     candidates
-}
-#[cfg(target_os = "windows")]
-fn rewrite_windows_dshow_sources_to_friendly_names(
-    sources: &[RecordingSource],
-) -> Option<Vec<RecordingSource>> {
-    let mut changed = false;
-    let mut rewritten: Vec<RecordingSource> = Vec::with_capacity(sources.len());
-
-    for source in sources {
-        if source.format.eq_ignore_ascii_case("dshow")
-            && source.input.to_ascii_lowercase().contains("@device_")
-        {
-            rewritten.push(RecordingSource {
-                label: source.label.clone(),
-                format: source.format.clone(),
-                input: windows_dshow_audio_input(&source.label),
-            });
-            changed = true;
-        } else {
-            rewritten.push(source.clone());
-        }
-    }
-
-    changed.then_some(rewritten)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn rewrite_windows_dshow_sources_to_friendly_names(
-    _sources: &[RecordingSource],
-) -> Option<Vec<RecordingSource>> {
-    None
 }
 
 #[cfg(target_os = "windows")]
